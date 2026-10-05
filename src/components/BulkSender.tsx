@@ -103,12 +103,29 @@ export const BulkSender: React.FC<BulkSenderProps> = ({
   const [manualInput, setManualInput] = useState('');
   const [showManualModal, setShowManualModal] = useState(false);
   const [showExplainerModal, setShowExplainerModal] = useState(false);
+  const [showPopupsHelpModal, setShowPopupsHelpModal] = useState(false);
 
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const dedicatedWindowRef = useRef<Window | null>(null);
 
   // Selected contact for live mockup preview
   const currentPreviewContact = contacts.find((c) => c.id === selectedContactId) || contacts[0];
+
+  // Advance sequential interactive campaign (Bypasses popup blocker 100%)
+  const handleAdvanceSequential = (contact: Contact, medium: 'app' | 'web') => {
+    const now = new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' });
+    setContacts((prev) =>
+      prev.map((c) => (c.id === contact.id ? { ...c, status: 'sent', sentAt: now } : c))
+    );
+    addLog(`✅ [إرسال مباشر بنقرة واحدة] تم توجيه الرسالة لرقم: ${contact.name} (${contact.phone}) عبر ${medium === 'app' ? 'تطبيق واتساب' : 'واتساب ويب'}`);
+    
+    if (currentIndex + 1 < contacts.length) {
+      setCurrentIndex((prev) => prev + 1);
+    } else {
+      setIsRunning(false);
+      addLog('🎉 اكتملت الحملة بنجاح! تم استهداف كافة جهات الاتصال.');
+    }
+  };
 
   // Build formatted message text for a specific contact
   const formatContactMessage = (contact: Contact) => {
@@ -152,26 +169,26 @@ export const BulkSender: React.FC<BulkSenderProps> = ({
     setCampaignLog((prev) => [`[${time}] ${msg}`, ...prev.slice(0, 40)]);
   };
 
-  // Dispatch single message manually
-  const handleSendSingleDirect = (contact: Contact) => {
+  // Dispatch single message directly via WhatsApp (App or Web)
+  const handleOpenWhatsAppDirect = (contact: Contact, useAppProtocol = false) => {
     const cleanPhone = cleanWhatsAppPhone(contact.phone);
     if (!cleanPhone) {
       addLog(`❌ رقم غير صالح: ${contact.name}`);
       return;
     }
 
-    const url = getDirectWhatsAppUrl(contact);
+    const text = formatContactMessage(contact);
+    const webUrl = `https://api.whatsapp.com/send?phone=${cleanPhone}&text=${encodeURIComponent(text)}`;
+    const appUrl = `whatsapp://send?phone=${cleanPhone}&text=${encodeURIComponent(text)}`;
 
-    if (dispatchMode === 'single_tab_flow') {
-      // Re-use single dedicated window
-      dedicatedWindowRef.current = window.open(url, 'WhatsAppCentralDispatcher', 'width=950,height=750');
-      addLog(`🎯 [نافذة مركزية موحدة] تم توجيه النافذة الواحدة للرقم: ${contact.name} (${contact.phone})`);
-    } else if (dispatchMode === 'direct_cloud') {
-      // Direct Cloud attempt
-      sendViaCloudAPI(contact);
+    if (useAppProtocol) {
+      // Direct protocol to open WhatsApp Desktop / Mobile Application directly
+      window.location.href = appUrl;
+      addLog(`📱 تم فتح تطبيق واتساب مباشرة لرقم: ${contact.name} (${cleanPhone}). اضغط زر الإرسال الأخضر داخل المحادثة لتصل الرسالة فوراً!`);
     } else {
-      window.open(url, '_blank');
-      addLog(`🔗 [نافذة متصفح] تم فتح المحادثة للرقم: ${contact.name} (${contact.phone})`);
+      // Re-use dedicated window to avoid popup clutter
+      dedicatedWindowRef.current = window.open(webUrl, 'WhatsAppCentralDispatcher', 'width=950,height=750');
+      addLog(`🌐 تم فتح محادثة واتساب لرقم: ${contact.name} (${cleanPhone}). اضغط زر الإرسال الأخضر داخل المحادثة لتصل فوراً.`);
     }
 
     const now = new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' });
@@ -180,12 +197,18 @@ export const BulkSender: React.FC<BulkSenderProps> = ({
     );
   };
 
+  // Dispatch single message manually
+  const handleSendSingleDirect = (contact: Contact) => {
+    // If user clicked direct send, always open real WhatsApp so message actually delivers!
+    handleOpenWhatsAppDirect(contact, false);
+  };
+
   // Send via Cloud API if configured
-  const sendViaCloudAPI = async (contact: Contact) => {
+  const sendViaCloudAPI = async (contact: Contact): Promise<boolean> => {
     const cleanPhone = cleanWhatsAppPhone(contact.phone);
     const messageText = formatContactMessage(contact);
 
-    if (gatewayConfig.phoneNumberId && gatewayConfig.accessToken) {
+    if (gatewayConfig.phoneNumberId && gatewayConfig.accessToken && gatewayConfig.accessToken !== 'EAAG_DEMO_TOKEN_SIMULATED') {
       try {
         addLog(`⚡ [سحابي مباشر] جاري إرسال الرسالة إلى: ${contact.name} (${cleanPhone}) عبر Meta API...`);
         const res = await fetch(`https://graph.facebook.com/v21.0/${gatewayConfig.phoneNumberId}/messages`, {
@@ -205,15 +228,18 @@ export const BulkSender: React.FC<BulkSenderProps> = ({
         const data = await res.json();
         if (res.ok) {
           addLog(`✅ [تم التسليم سحابياً بنجاح] استلمت خوادم واتساب الرسالة برقم معرف: ${data.messages?.[0]?.id || 'OK'}`);
+          return true;
         } else {
-          addLog(`⚠️ [استجابة Meta API]: ${data.error?.message || 'تحقق من صلاحية التوكن'}`);
+          addLog(`⚠️ [خطأ Meta API]: ${data.error?.message || 'تحقق من صلاحية التوكن'}`);
+          return false;
         }
       } catch (err: any) {
         addLog(`❌ [خطأ اتصال سحابي]: ${err.message}`);
+        return false;
       }
     } else {
-      // Transparent notice to user
-      addLog(`ℹ️ [تنبيه] للإرسال السحابي بدون فتح نوافذ، يرجى إدخال Phone Number ID والتوكن من زر "إعدادات الربط السحابي".`);
+      addLog(`⚠️ [تنبيه هام] نمط الإرسال السحابي (0 نوافذ) يتطلب إدخال مفتاح Meta Cloud API الحقيقي. استخدم (النافذة المركزية الموحدة) أو أزرار (إرسال بالواتساب) لإرسال الرسائل مجاناً من رقمك مباشرة.`);
+      return false;
     }
   };
 
@@ -295,17 +321,21 @@ export const BulkSender: React.FC<BulkSenderProps> = ({
           setContacts((prev) =>
             prev.map((c, idx) => (idx === currentIndex ? { ...c, status: 'sent', sentAt: now } : c))
           );
-          addLog(`🎯 [نافذة مركزية واحدة] تم توجيه الرسالة للرقم ${currentIndex + 1}/${contacts.length}: ${currentContact.name} (${currentContact.phone}) - بفارق ${delay} ثوانٍ.`);
+          addLog(`🎯 [نافذة مركزية موحدة] تم فتح محادثة الرقم ${currentIndex + 1}/${contacts.length}: ${currentContact.name} (${currentContact.phone}). اضغط زر الإرسال الأخضر داخل الواتساب.`);
           setCurrentIndex((prev) => prev + 1);
 
         } else if (dispatchMode === 'direct_cloud') {
           // ⚡ CLOUD API DISPATCH: Background HTTP API call (0 windows)
-          sendViaCloudAPI(currentContact);
-          const now = new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' });
-          setContacts((prev) =>
-            prev.map((c, idx) => (idx === currentIndex ? { ...c, status: 'sent', sentAt: now } : c))
-          );
-          addLog(`⚡ [إرسال سحابي في الخلفية] تم تنفيذ الطلب للرقم: ${currentContact.name} (${currentContact.phone}) بفارق ${delay} ثوانٍ.`);
+          sendViaCloudAPI(currentContact).then((success) => {
+            const now = new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' });
+            setContacts((prev) =>
+              prev.map((c, idx) => (idx === currentIndex ? { 
+                ...c, 
+                status: success ? 'sent' : 'failed', 
+                sentAt: success ? now : undefined 
+              } : c))
+            );
+          });
           setCurrentIndex((prev) => prev + 1);
 
         } else {
@@ -329,12 +359,19 @@ export const BulkSender: React.FC<BulkSenderProps> = ({
 
   const handleStartCampaign = () => {
     if (contacts.length === 0) return;
+
+    if (dispatchMode === 'direct_cloud' && (!gatewayConfig.phoneNumberId || !gatewayConfig.accessToken || gatewayConfig.accessToken === 'EAAG_DEMO_TOKEN_SIMULATED')) {
+      setIsGatewayModalOpen(true);
+      addLog('⚠️ تنبيه: لا يمكن الإرسال السحابي بدون مفتاح Meta Cloud API الحقيقي. يرجى التبديل إلى "النافذة المركزية الموحدة" أو إدخال مفتاح الـ API.');
+      return;
+    }
+
     setIsRunning(true);
 
     if (dispatchMode === 'single_tab_flow') {
-      addLog(`🎯 تم بدء الحملة بنمط «النافذة المركزية الموحدة»: سيتم استخدام نافذة واحدة فقط تتنقل بين الأرقام بتتابع زمني بدون إغراق شاشتك بالنوافذ!`);
+      addLog(`🎯 تم بدء الحملة بنمط «النافذة المركزية الموحدة»: سيتم توجيه النافذة الواحدة بين الأرقام بتتابع آمن!`);
     } else if (dispatchMode === 'direct_cloud') {
-      addLog(`⚡ تم بدء الحملة بنمط «الإرسال السحابي المباشر»: إرسال في الخلفية بدون فتح أي نوافذ متصفح.`);
+      addLog(`⚡ تم بدء الحملة بنمط «الإرسال السحابي المباشر»: إرسال في الخلفية عبر سيرفر Meta API.`);
     } else {
       addLog(`🔗 تم بدء الحملة بنمط فتح نوافذ المحادثات المباشرة.`);
     }
@@ -438,6 +475,17 @@ export const BulkSender: React.FC<BulkSenderProps> = ({
           </div>
 
           <div className="flex items-center gap-2 flex-wrap">
+            <a
+              href="https://ais-dev-n5yd7obd7eppslprji7dlh-502190781622.europe-west2.run.app"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="px-3.5 py-2 text-xs font-bold text-white bg-[#008069] hover:bg-[#006e5a] rounded-xl flex items-center gap-1.5 transition-colors shadow-xs"
+              title="فتح البرنامج في تبويب متصفح كامل لتفادي قيود المعاينة"
+            >
+              <ExternalLink className="w-3.5 h-3.5" />
+              <span>فتح بنافذة مستقلة خارج المعاينة</span>
+            </a>
+
             <button
               onClick={() => setShowExplainerModal(true)}
               className="px-3.5 py-2 text-xs font-semibold text-[#008069] bg-[#e7f7f3] hover:bg-[#d8f2eb] border border-[#008069]/30 rounded-xl flex items-center gap-1.5 transition-colors cursor-pointer"
@@ -941,6 +989,15 @@ export const BulkSender: React.FC<BulkSenderProps> = ({
                   <RotateCcw className="w-3.5 h-3.5" />
                   <span>إعادة ضبط</span>
                 </button>
+
+                <button
+                  onClick={() => setShowPopupsHelpModal(true)}
+                  className="px-2.5 py-1.5 text-xs text-amber-800 hover:text-amber-950 bg-amber-50 hover:bg-amber-100 border border-amber-200 rounded-xl flex items-center gap-1 cursor-pointer"
+                  title="حل مشكلة النوافذ المنبثقة المحظورة في متصفحك"
+                >
+                  <ShieldAlert className="w-3.5 h-3.5 text-amber-700" />
+                  <span>حل حظر النوافذ</span>
+                </button>
               </div>
 
               {isRunning && countdown > 0 && (
@@ -949,6 +1006,84 @@ export const BulkSender: React.FC<BulkSenderProps> = ({
                   <span>الرسالة التالية بعد {countdown} ثوانٍ...</span>
                 </div>
               )}
+            </div>
+          </div>
+
+          {/* Sequential Dispatch Card (Always Available - 100% immune to Popup Blockers!) */}
+          {contacts.length > 0 && currentIndex < contacts.length && (
+            <div className="p-4 bg-emerald-50 border-2 border-[#008069] rounded-2xl shadow-sm space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2 text-xs font-bold text-[#008069]">
+                  <Zap className="w-4 h-4 fill-current text-[#008069]" />
+                  <span>محطة الإرسال المباشر (يتجاوز حظر المتصفح 100%):</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-mono font-bold text-slate-700 bg-white px-2.5 py-1 rounded-lg border border-emerald-200">
+                    الرقم {currentIndex + 1} من {contacts.length}
+                  </span>
+                  {currentIndex > 0 && (
+                    <button
+                      onClick={() => setCurrentIndex((p) => Math.max(0, p - 1))}
+                      className="text-[11px] text-slate-600 hover:text-slate-900 bg-white px-2 py-0.5 rounded border border-slate-200 cursor-pointer"
+                    >
+                      السابق
+                    </button>
+                  )}
+                  {currentIndex + 1 < contacts.length && (
+                    <button
+                      onClick={() => setCurrentIndex((p) => Math.min(contacts.length - 1, p + 1))}
+                      className="text-[11px] text-slate-600 hover:text-slate-900 bg-white px-2 py-0.5 rounded border border-slate-200 cursor-pointer"
+                    >
+                      التالي ❯
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex flex-col sm:flex-row items-center gap-2">
+                <a
+                  href={getMobileAppUrl(contacts[currentIndex])}
+                  onClick={() => handleAdvanceSequential(contacts[currentIndex], 'app')}
+                  className="w-full sm:flex-1 py-3 px-4 bg-[#008069] hover:bg-[#006e5a] text-white font-bold rounded-xl text-xs flex items-center justify-center gap-2 shadow-xs transition-transform active:scale-98 cursor-pointer"
+                >
+                  <Smartphone className="w-4 h-4" />
+                  <span>إرسال الآن عبر تطبيق واتساب: {contacts[currentIndex].name}</span>
+                </a>
+
+                <a
+                  href={getDirectWhatsAppUrl(contacts[currentIndex])}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={() => handleAdvanceSequential(contacts[currentIndex], 'web')}
+                  className="w-full sm:flex-1 py-3 px-4 bg-white hover:bg-slate-100 text-slate-800 border-2 border-[#008069] font-bold rounded-xl text-xs flex items-center justify-center gap-2 shadow-xs transition-transform active:scale-98 cursor-pointer"
+                >
+                  <ExternalLink className="w-4 h-4 text-[#008069]" />
+                  <span>إرسال عبر واتساب ويب: {contacts[currentIndex].name}</span>
+                </a>
+              </div>
+
+              <div className="text-[11px] text-emerald-800 flex items-center justify-between">
+                <span>⚡ اضغط الزر ليفتح واتساب فوراً وتصل الرسالة لـ ({contacts[currentIndex].name})، وسينتقل تلقائياً للرقم التالي!</span>
+                {isRunning && (
+                  <button
+                    onClick={handlePauseCampaign}
+                    className="text-xs text-rose-600 font-bold hover:underline cursor-pointer"
+                  >
+                    إيقاف الحملة
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Guidance Banner for Guaranteed Delivery */}
+          <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-900 flex items-start gap-2.5">
+            <Info className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+            <div className="leading-relaxed">
+              <strong>💡 حل مشكلة حظر النوافذ المنبثقة:</strong>
+              <p className="mt-0.5 text-[11px] text-amber-800">
+                إذا كان متصفحك يحظر النوافذ التلقائية: اضغط على أزرار <strong>«واتساب»</strong> أو <strong>«ويب»</strong> الخضراء في الجدول أدناه لكل رقم مباشرة؛ فهي روابط أصلية <strong>لا يمكن للمتصفح حظرها إطلاقاً</strong> وتفتح المحادثة لتصل الرسالة فوراً!
+              </p>
             </div>
           </div>
 
@@ -961,7 +1096,7 @@ export const BulkSender: React.FC<BulkSenderProps> = ({
                     <th className="py-2.5 px-3">الاسم</th>
                     <th className="py-2.5 px-3">رقم الهاتف</th>
                     <th className="py-2.5 px-3">الحالة</th>
-                    <th className="py-2.5 px-3 text-center">إرسال فوري</th>
+                    <th className="py-2.5 px-3 text-center">إرسال فوري بالواتساب</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 font-sans">
@@ -994,6 +1129,12 @@ export const BulkSender: React.FC<BulkSenderProps> = ({
                               <span>جارٍ التوجيه...</span>
                             </span>
                           )}
+                          {contact.status === 'failed' && (
+                            <span className="inline-flex items-center gap-1 text-[11px] text-rose-600 font-bold">
+                              <AlertTriangle className="w-3 h-3" />
+                              <span>لم تُرسل (يلزم مفتاح سحابي)</span>
+                            </span>
+                          )}
                           {contact.status === 'pending' && (
                             <span className="text-[11px] text-slate-400">
                               في الانتظار
@@ -1001,19 +1142,42 @@ export const BulkSender: React.FC<BulkSenderProps> = ({
                           )}
                         </td>
                         <td className="py-2 px-3 text-center">
-                          <div className="flex items-center justify-center gap-1.5">
-                            {/* Direct Send Button */}
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleSendSingleDirect(contact);
+                          <div className="flex items-center justify-center gap-1.5 flex-wrap">
+                            {/* Native WhatsApp App Link (100% bypasses popup blocker) */}
+                            <a
+                              href={getMobileAppUrl(contact)}
+                              onClick={() => {
+                                const now = new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' });
+                                setContacts((prev) =>
+                                  prev.map((c) => (c.id === contact.id ? { ...c, status: 'sent', sentAt: now } : c))
+                                );
+                                addLog(`📱 تم فتح تطبيق واتساب مباشرة لرقم: ${contact.name} (${contact.phone})`);
                               }}
-                              title="إرسال مباشر للرسالة لهذا الرقم الآن"
-                              className="px-2.5 py-1 text-[11px] font-bold text-white bg-[#008069] hover:bg-[#006e5a] rounded-lg transition-colors shadow-2xs flex items-center gap-1 cursor-pointer"
+                              title="فتح في تطبيق واتساب مباشرة (لا يحظره المتصفح أبداً)"
+                              className="px-2.5 py-1 text-[11px] font-bold text-white bg-[#008069] hover:bg-[#006e5a] rounded-lg transition-colors shadow-2xs flex items-center gap-1 cursor-pointer whitespace-nowrap"
                             >
-                              <Send className="w-3 h-3" />
-                              <span>إرسال الآن</span>
-                            </button>
+                              <Smartphone className="w-3 h-3" />
+                              <span>واتساب</span>
+                            </a>
+
+                            {/* WhatsApp Web Direct Link (100% bypasses popup blocker) */}
+                            <a
+                              href={getDirectWhatsAppUrl(contact)}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              onClick={() => {
+                                const now = new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' });
+                                setContacts((prev) =>
+                                  prev.map((c) => (c.id === contact.id ? { ...c, status: 'sent', sentAt: now } : c))
+                                );
+                                addLog(`🌐 تم فتح واتساب ويب لرقم: ${contact.name} (${contact.phone})`);
+                              }}
+                              title="فتح في واتساب ويب (لا يحظره المتصفح)"
+                              className="px-2.5 py-1 text-[11px] font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 border border-slate-200 rounded-lg transition-colors flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                            >
+                              <ExternalLink className="w-3 h-3 text-[#008069]" />
+                              <span>ويب</span>
+                            </a>
 
                             <button
                               onClick={(e) => {
@@ -1359,6 +1523,74 @@ export const BulkSender: React.FC<BulkSenderProps> = ({
                 </button>
               </div>
 
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Popups Help Modal */}
+      {showPopupsHelpModal && (
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-3xl max-w-lg w-full p-6 space-y-5 shadow-2xl relative text-right">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2">
+                <ShieldAlert className="w-5 h-5 text-amber-600" />
+                <h3 className="text-sm font-bold text-slate-900">حل مشكلة حظر النوافذ المنبثقة في متصفحك</h3>
+              </div>
+              <button
+                onClick={() => setShowPopupsHelpModal(false)}
+                className="text-slate-400 hover:text-slate-700 text-xs cursor-pointer"
+              >
+                إغلاق ✕
+              </button>
+            </div>
+
+            <div className="space-y-4 text-xs text-slate-700 leading-relaxed">
+              <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-900">
+                ⚠️ تقوم متصفحات الويب (Chrome, Edge, Safari) بحظر النوافذ التلقائية افتراضياً لحمايتك، لذلك عندما يبدأ الإرسال التلقائي قد يتم منع فتح الواتساب.
+              </div>
+
+              <div className="space-y-2.5">
+                <div className="font-bold text-slate-900">كيف تسمح بالنوافذ في خطوتين بسيطتين:</div>
+                <div className="space-y-2">
+                  <div className="flex items-start gap-2.5 p-2.5 bg-slate-50 rounded-xl border border-slate-200">
+                    <span className="w-6 h-6 rounded-full bg-[#008069] text-white flex items-center justify-center text-xs font-bold shrink-0">1</span>
+                    <div>
+                      <strong className="block text-slate-900">انقر على أيقونة القفل 🔒 أو علامة النافذة المحظورة 🚫</strong>
+                      <span className="text-[11px] text-slate-500">ستجدها في أعلى المتصفح في شريط العنوان (بجانب رابط الموقع مباشرة).</span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-start gap-2.5 p-2.5 bg-slate-50 rounded-xl border border-slate-200">
+                    <span className="w-6 h-6 rounded-full bg-[#008069] text-white flex items-center justify-center text-xs font-bold shrink-0">2</span>
+                    <div>
+                      <strong className="block text-slate-900">اختر "النوافذ المنبثقة وإعادة التوجيه" (Pop-ups)</strong>
+                      <span className="text-[11px] text-slate-500">قم بتغيير الخيار من "حظر" إلى <strong>"سماح دائماً (Always Allow)"</strong>.</span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-start gap-2.5 p-2.5 bg-slate-50 rounded-xl border border-slate-200">
+                    <span className="w-6 h-6 rounded-full bg-[#008069] text-white flex items-center justify-center text-xs font-bold shrink-0">3</span>
+                    <div>
+                      <strong className="block text-slate-900">أعد تحميل الصفحة أو ابدأ الإرسال</strong>
+                      <span className="text-[11px] text-slate-500">سيعمل الإرسال التلقائي المستمر دون أي توقف أو حظر!</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-900">
+                💡 <strong>أو استخدم الحل البديل المباشر دون الحاجة لتغيير أي إعدادات:</strong>
+                <br />
+                اضغط على أزرار <strong>«واتساب»</strong> أو <strong>«ويب»</strong> الخضراء الموجودة بجانب كل رقم في الجدول أدناه، فهي روابط عادية لا يحظرها المتصفح أبداً!
+              </div>
+
+              <button
+                onClick={() => setShowPopupsHelpModal(false)}
+                className="w-full py-2.5 text-xs font-bold text-white bg-[#008069] hover:bg-[#006e5a] rounded-xl transition-colors cursor-pointer shadow-xs"
+              >
+                حسناً، فهمت الطريقة
+              </button>
             </div>
           </div>
         </div>
