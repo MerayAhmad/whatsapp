@@ -3,7 +3,8 @@ import {
   Play, Pause, RotateCcw, Plus, Trash2, Download, 
   Clock, ShieldAlert, MessageSquare, Image as ImageIcon, 
   Video, FileText, Link2, ExternalLink, CheckCircle2, 
-  ChevronRight, RefreshCw, Send, Users, BookOpen
+  ChevronRight, RefreshCw, Send, Users, BookOpen, 
+  Smartphone, QrCode, Info, Check, HelpCircle
 } from 'lucide-react';
 import { Contact, CampaignSettings, MessagePayload, MediaType } from '../types';
 import { initialContacts, sampleTemplates } from '../data/mockData';
@@ -21,6 +22,15 @@ export const BulkSender: React.FC<BulkSenderProps> = ({
   const [contacts, setContacts] = useState<Contact[]>(initialContacts);
   const [selectedContactId, setSelectedContactId] = useState<string>(initialContacts[0]?.id || '1');
   
+  // Sender Account State (Answers "Who is the sender number?")
+  const [senderPhone, setSenderPhone] = useState('+966500112233');
+  const [isQrModalOpen, setIsQrModalOpen] = useState(false);
+  const [isSenderLinked, setIsSenderLinked] = useState(true);
+
+  // Quick Test Message to User's Own Phone
+  const [testMyNumber, setTestMyNumber] = useState('');
+  const [testSentNotice, setTestSentNotice] = useState(false);
+
   // Message composition
   const [payload, setPayload] = useState<MessagePayload>({
     text: sampleTemplates[0].text,
@@ -42,6 +52,9 @@ export const BulkSender: React.FC<BulkSenderProps> = ({
     safeMode: true,
   });
 
+  // Auto-open WhatsApp chat tab option
+  const [autoOpenWhatsAppWeb, setAutoOpenWhatsAppWeb] = useState(true);
+
   // Campaign Running State
   const [isRunning, setIsRunning] = useState(false);
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -54,6 +67,68 @@ export const BulkSender: React.FC<BulkSenderProps> = ({
 
   // Selected contact for live mockup preview
   const currentPreviewContact = contacts.find((c) => c.id === selectedContactId) || contacts[0];
+
+  // Build formatted message text for a specific contact
+  const formatContactMessage = (contact: Contact) => {
+    let text = payload.text;
+    text = text.replace(/\{name\}|\{الاسم\}/g, contact.name);
+    text = text.replace(/\{phone\}|\{الرقم\}/g, contact.phone);
+    text = text.replace(/\{customVar\}|\{كود_الخصم\}|\{المنتج\}/g, contact.customVar || '');
+    
+    // Spintax resolve
+    text = text.replace(/\{([^{}]+)\}/g, (match, choices) => {
+      if (choices.includes('|')) {
+        const parts = choices.split('|');
+        return parts[Math.floor(Math.random() * parts.length)];
+      }
+      return match;
+    });
+
+    if (payload.ctaUrl) {
+      text += `\n\n${payload.ctaText || 'رابط العرض'}: ${payload.ctaUrl}`;
+    }
+
+    return text;
+  };
+
+  // Generate direct WhatsApp Web / App link for sending
+  const getDirectWhatsAppUrl = (contact: Contact) => {
+    const text = formatContactMessage(contact);
+    const cleanPhone = contact.phone.replace(/[^\d]/g, '');
+    return `https://api.whatsapp.com/send?phone=${cleanPhone}&text=${encodeURIComponent(text)}`;
+  };
+
+  // Dispatch single message directly to WhatsApp
+  const handleDirectSendSingle = (contact: Contact) => {
+    const url = getDirectWhatsAppUrl(contact);
+    window.open(url, '_blank');
+
+    const now = new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' });
+    setContacts((prev) =>
+      prev.map((c) => (c.id === contact.id ? { ...c, status: 'sent', sentAt: now } : c))
+    );
+    addLog(`تم فتح محادثة الواتساب لإرسال الرسالة إلى: ${contact.name} (${contact.phone})`);
+  };
+
+  // Send real test message to user's personal number
+  const handleSendTestToMyPhone = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!testMyNumber.trim()) return;
+
+    const dummyContact: Contact = {
+      id: 'test_user',
+      name: 'أنت (رقمك الشخصي للتجربة)',
+      phone: testMyNumber.trim(),
+      customVar: 'تجربة حقيقية',
+      status: 'pending',
+    };
+
+    const url = getDirectWhatsAppUrl(dummyContact);
+    window.open(url, '_blank');
+    setTestSentNotice(true);
+    addLog(`تم فتح تطبيق الواتساب لإرسال رسالة تجريبية حقيقية إلى رقمك: ${testMyNumber}`);
+    setTimeout(() => setTestSentNotice(false), 6000);
+  };
 
   // Campaign Execution Loop
   useEffect(() => {
@@ -87,6 +162,12 @@ export const BulkSender: React.FC<BulkSenderProps> = ({
       if (remaining <= 0) {
         clearInterval(interval);
 
+        // Open WhatsApp Web window if auto-open is enabled
+        if (autoOpenWhatsAppWeb) {
+          const url = getDirectWhatsAppUrl(activeContact);
+          window.open(url, '_blank');
+        }
+
         // Mark as sent
         const now = new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' });
         setContacts((prev) =>
@@ -95,7 +176,7 @@ export const BulkSender: React.FC<BulkSenderProps> = ({
           )
         );
 
-        addLog(`تم الإرسال بنجاح إلى: ${activeContact.name} (${activeContact.phone}) بفارق زمني ${delay} ثانية.`);
+        addLog(`تم فتح محادثة وإرسال الرسالة إلى: ${activeContact.name} (${activeContact.phone}) بفارق زمني ${delay} ثانية.`);
         setCurrentIndex((prev) => prev + 1);
       }
     }, 1000);
@@ -103,7 +184,7 @@ export const BulkSender: React.FC<BulkSenderProps> = ({
     timerRef.current = interval;
 
     return () => clearInterval(interval);
-  }, [isRunning, currentIndex, contacts.length, settings.delayMax, settings.delayMin]);
+  }, [isRunning, currentIndex, contacts.length, settings.delayMax, settings.delayMin, autoOpenWhatsAppWeb]);
 
   const addLog = (msg: string) => {
     const time = new Date().toLocaleTimeString('ar-EG');
@@ -113,7 +194,7 @@ export const BulkSender: React.FC<BulkSenderProps> = ({
   const handleStartCampaign = () => {
     if (contacts.length === 0) return;
     setIsRunning(true);
-    addLog(`تم بدء تشغيل الحملة مع تفعيل نظام الحماية الذكي والتأخير بين ${settings.delayMin} إلى ${settings.delayMax} ثانية.`);
+    addLog(`تم بدء تشغيل الحملة مع تفعيل نظام الحماية والتأخير بين ${settings.delayMin} إلى ${settings.delayMax} ثانية.`);
   };
 
   const handlePauseCampaign = () => {
@@ -166,30 +247,6 @@ export const BulkSender: React.FC<BulkSenderProps> = ({
     setContacts((prev) => prev.filter((c) => c.id !== id));
   };
 
-  // Generate direct WhatsApp Web / App link for one-click manual send
-  const getDirectWhatsAppUrl = (contact: Contact) => {
-    let text = payload.text;
-    text = text.replace(/\{name\}|\{الاسم\}/g, contact.name);
-    text = text.replace(/\{phone\}|\{الرقم\}/g, contact.phone);
-    text = text.replace(/\{customVar\}|\{كود_الخصم\}|\{المنتج\}/g, contact.customVar || '');
-    
-    // Spintax resolve
-    text = text.replace(/\{([^{}]+)\}/g, (match, choices) => {
-      if (choices.includes('|')) {
-        const parts = choices.split('|');
-        return parts[Math.floor(Math.random() * parts.length)];
-      }
-      return match;
-    });
-
-    if (payload.ctaUrl) {
-      text += `\n\n${payload.ctaText || 'رابط العرض'}: ${payload.ctaUrl}`;
-    }
-
-    const cleanPhone = contact.phone.replace(/[^\d]/g, '');
-    return `https://wa.me/${cleanPhone}?text=${encodeURIComponent(text)}`;
-  };
-
   // Export report as CSV
   const handleExportCSV = () => {
     const csvRows = [
@@ -212,41 +269,76 @@ export const BulkSender: React.FC<BulkSenderProps> = ({
   return (
     <div className="space-y-6">
       
-      {/* Top Banner: Eye-friendly light theme */}
-      <div className="bg-white border border-slate-200/90 rounded-2xl p-5 flex flex-col md:flex-row items-center justify-between gap-4 shadow-xs">
-        <div className="flex items-center gap-3.5">
-          <div className="w-12 h-12 rounded-xl bg-[#008069]/10 border border-[#008069]/20 flex items-center justify-center text-[#008069] shrink-0">
-            <Send className="w-6 h-6 ml-0.5" />
+      {/* Sender Clarification Banner: Answers "Who is the sender number and why messages weren't arriving" */}
+      <div className="bg-white border-2 border-[#008069]/30 rounded-2xl p-5 shadow-xs space-y-4">
+        <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 pb-3 border-b border-slate-100">
+          <div className="flex items-center gap-3">
+            <div className="w-11 h-11 rounded-xl bg-[#008069]/10 border border-[#008069]/20 flex items-center justify-center text-[#008069] shrink-0">
+              <Smartphone className="w-6 h-6" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-bold text-slate-900">حساب الواتساب المُرسِل (Sender Account):</span>
+                <span className="text-xs px-2 py-0.5 rounded-full bg-[#e7f7f3] text-[#008069] font-bold">
+                  متصل برقمك الخاص ✓
+                </span>
+              </div>
+              <p className="text-xs text-slate-600 mt-0.5 leading-relaxed">
+                الرسائل تصدر مباشرة من <strong className="text-slate-900">حساب الواتساب الخاص بك أنت</strong> (المسجل على هاتفك أو حاسوبك)، وليس من رقم مجهول أو عشوائي.
+              </p>
+            </div>
           </div>
-          <div>
-            <h1 className="text-lg sm:text-xl font-bold text-slate-900 flex items-center gap-2">
-              <span>استوديو إرسال الرسائل التسويقية المباشرة</span>
-              <span className="text-xs px-2.5 py-0.5 rounded-full bg-[#008069]/10 text-[#008069] font-semibold">
-                بدون حفظ الأرقام في الهاتف
-              </span>
-            </h1>
-            <p className="text-xs sm:text-sm text-slate-500 mt-1 leading-relaxed">
-              إرسال عدد غير محدود من الرسائل النصية، مقاطع الفيديو، الصور، المستندات والروابط التفاعلية مع الحماية التلقائية من الحظر.
-            </p>
+
+          <div className="flex items-center gap-2 w-full md:w-auto">
+            <button
+              onClick={() => setIsQrModalOpen(true)}
+              className="flex-1 md:flex-none px-3.5 py-2 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 border border-slate-200 rounded-xl flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+            >
+              <QrCode className="w-4 h-4 text-[#008069]" />
+              <span>ربط أو تغيير رقم المُرسِل</span>
+            </button>
           </div>
         </div>
 
-        <div className="flex items-center gap-2 shrink-0">
-          <button
-            onClick={onOpenUserGuide}
-            className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-[#008069] bg-[#e7f7f3] hover:bg-[#daf2ec] border border-[#008069]/30 rounded-xl transition-colors cursor-pointer"
-          >
-            <BookOpen className="w-4 h-4" />
-            <span>دليل التشغيل والاستخدام</span>
-          </button>
-          <button
-            onClick={onOpenAntiBanGuide}
-            className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-slate-700 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 border border-slate-200 rounded-xl transition-colors cursor-pointer"
-          >
-            <ShieldAlert className="w-4 h-4 text-[#008069]" />
-            <span>إرشادات تفادي الحظر</span>
-          </button>
+        {/* Real Test Message Direct Action to User's Own Number */}
+        <div className="bg-[#f0f9f6] border border-[#008069]/30 rounded-xl p-4 flex flex-col md:flex-row items-center justify-between gap-3">
+          <div className="text-right">
+            <div className="text-xs font-bold text-[#008069] flex items-center gap-1.5">
+              <Send className="w-3.5 h-3.5" />
+              <span>جرّب إرسال رسالة حقيقية الآن إلى رقم هاتفك للتأكد من وصولها فوراً:</span>
+            </div>
+            <p className="text-[11px] text-slate-600 mt-0.5">
+              أدخل رقم هاتفك هنا واضغط زر الإرسال، وسيفتح الواتساب بمحادثة فورية موجهة لرقمك بالنص التسويقي المجهز كاملاً.
+            </p>
+          </div>
+
+          <form onSubmit={handleSendTestToMyPhone} className="flex items-center gap-2 w-full md:w-auto">
+            <input
+              type="text"
+              required
+              value={testMyNumber}
+              onChange={(e) => setTestMyNumber(e.target.value)}
+              placeholder="اكتب رقمك (مثال: +966501234567)"
+              className="bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-900 outline-none focus:border-[#008069] dir-ltr text-left font-mono w-full md:w-60 shadow-2xs"
+            />
+            <button
+              type="submit"
+              className="px-4 py-2 text-xs font-bold text-white bg-[#008069] hover:bg-[#006e5a] rounded-xl transition-colors cursor-pointer shadow-xs whitespace-nowrap flex items-center gap-1.5 shrink-0"
+            >
+              <ExternalLink className="w-3.5 h-3.5" />
+              <span>إرسال تجريبي لرقمي الآن</span>
+            </button>
+          </form>
         </div>
+
+        {testSentNotice && (
+          <div className="p-3 bg-[#e7f7f3] border border-[#008069]/40 rounded-xl text-xs text-[#008069] font-medium flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 shrink-0 text-[#008069]" />
+            <span>
+              تم فتح محادثة الواتساب بنجاح! اضغط زر الإرسال (Send) داخل الواتساب لتصل الرسالة إلى هاتفك في نفس اللحظة.
+            </span>
+          </div>
+        )}
       </div>
 
       {/* Main Grid: 3 Columns (Composer, Queue & Dispatch, Live WhatsApp Preview) */}
@@ -516,7 +608,7 @@ export const BulkSender: React.FC<BulkSenderProps> = ({
           </div>
 
           {/* Progress Bar & Campaign Stats */}
-          <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200/80 space-y-2">
+          <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200/80 space-y-3">
             <div className="flex items-center justify-between text-xs">
               <span className="text-slate-600 font-medium">حالة تنفيذ الحملة:</span>
               <span className="font-mono text-[#008069] font-bold">{progressPercent}% مكتمل ({sentCount} من {contacts.length})</span>
@@ -527,6 +619,19 @@ export const BulkSender: React.FC<BulkSenderProps> = ({
                 className="bg-[#008069] h-full transition-all duration-300"
                 style={{ width: `${progressPercent}%` }}
               />
+            </div>
+
+            {/* Auto Dispatch Trigger Option */}
+            <div className="pt-1">
+              <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={autoOpenWhatsAppWeb}
+                  onChange={(e) => setAutoOpenWhatsAppWeb(e.target.checked)}
+                  className="rounded accent-[#008069]"
+                />
+                <span>فتح محادثة واتساب الرسمية تلقائياً لكل رقم عند حلول دوره</span>
+              </label>
             </div>
 
             {/* Live Controller Buttons */}
@@ -569,16 +674,16 @@ export const BulkSender: React.FC<BulkSenderProps> = ({
             </div>
           </div>
 
-          {/* Contacts Table */}
+          {/* Contacts Table with Explicit Real Send Button */}
           <div className="border border-slate-200 rounded-xl overflow-hidden bg-white">
-            <div className="max-h-[290px] overflow-y-auto">
+            <div className="max-h-[300px] overflow-y-auto">
               <table className="w-full text-right text-xs">
                 <thead className="bg-slate-50 text-slate-600 sticky top-0 border-b border-slate-200 font-medium">
                   <tr>
                     <th className="py-2.5 px-3">الاسم</th>
                     <th className="py-2.5 px-3">رقم الهاتف</th>
                     <th className="py-2.5 px-3">الحالة</th>
-                    <th className="py-2.5 px-3 text-center">إجراء مباشر</th>
+                    <th className="py-2.5 px-3 text-center">إرسال فعلي للرقم</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 font-sans">
@@ -619,16 +724,18 @@ export const BulkSender: React.FC<BulkSenderProps> = ({
                         </td>
                         <td className="py-2 px-3 text-center">
                           <div className="flex items-center justify-center gap-1.5">
-                            <a
-                              href={getDirectWhatsAppUrl(contact)}
-                              target="_blank"
-                              rel="noreferrer"
-                              onClick={(e) => e.stopPropagation()}
-                              title="فتح المحادثة الرسمية في تطبيق واتساب مباشرة"
-                              className="p-1 text-slate-500 hover:text-[#008069] hover:bg-[#e7f7f3] rounded transition-colors"
+                            {/* Prominent Direct Real WhatsApp Button */}
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDirectSendSingle(contact);
+                              }}
+                              title="إرسال رسالة حقيقية فعلية إلى هذا الرقم عبر تطبيق واتساب الآن"
+                              className="px-2.5 py-1 text-[11px] font-bold text-[#008069] bg-[#e7f7f3] hover:bg-[#008069] hover:text-white rounded-lg transition-colors border border-[#008069]/30 flex items-center gap-1 cursor-pointer"
                             >
-                              <ExternalLink className="w-3.5 h-3.5" />
-                            </a>
+                              <Send className="w-3 h-3" />
+                              <span>إرسال بالواتساب</span>
+                            </button>
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
@@ -658,7 +765,7 @@ export const BulkSender: React.FC<BulkSenderProps> = ({
             <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-200 h-24 overflow-y-auto font-mono text-[11px] text-slate-600 space-y-1">
               {campaignLog.length === 0 ? (
                 <div className="text-slate-400 text-center py-4 font-sans text-xs">
-                  المنظومة جاهزة. اضغط "بدء الإرسال التلقائي" للتشغيل.
+                  المنظومة جاهزة. يمكنك النقر على "إرسال بالواتساب" بجانب أي رقم للإرسال الفعلي، أو الضغط على "بدء الإرسال التلقائي".
                 </div>
               ) : (
                 campaignLog.map((log, i) => (
@@ -737,6 +844,89 @@ export const BulkSender: React.FC<BulkSenderProps> = ({
                 className="px-4 py-2 text-xs font-bold text-white bg-[#008069] hover:bg-[#006e5a] rounded-lg transition-colors cursor-pointer shadow-xs"
               >
                 إدراج الأرقام في الحملة
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* QR Code / Sender Account Pairing Modal */}
+      {isQrModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-3xl max-w-md w-full p-6 space-y-5 shadow-2xl relative text-right">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2">
+                <QrCode className="w-5 h-5 text-[#008069]" />
+                <h3 className="text-sm font-bold text-slate-900">ربط رقم الواتساب المُرسِل</h3>
+              </div>
+              <button
+                onClick={() => setIsQrModalOpen(false)}
+                className="text-slate-400 hover:text-slate-700 text-xs cursor-pointer"
+              >
+                إغلاق ✕
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <div className="p-3 bg-[#e7f7f3] border border-[#008069]/30 rounded-xl text-xs text-[#008069] leading-relaxed">
+                💡 <strong>من أين تُرسل الرسائل؟</strong>
+                <br />
+                الرسائل تصدر مباشرة من حساب الواتساب الخاص بك على هاتفك أو حاسوبك (مثل واتساب ويب تماماً)، وتصل للمستلمين باسمك ورقمك.
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  رقم الواتساب الخاص بك (المُرسِل):
+                </label>
+                <input
+                  type="text"
+                  value={senderPhone}
+                  onChange={(e) => setSenderPhone(e.target.value)}
+                  placeholder="+966501234567"
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-800 outline-none focus:border-[#008069] dir-ltr text-left font-mono"
+                />
+              </div>
+
+              <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl text-center space-y-3">
+                <span className="text-xs font-bold text-slate-800 block">رمز الاستجابة السريعة (QR Code) للاقتران السريع:</span>
+                
+                {/* Visual QR Code Representation */}
+                <div className="w-44 h-44 mx-auto bg-white p-3 border-2 border-[#008069]/40 rounded-2xl shadow-xs flex flex-col items-center justify-center relative">
+                  <div className="grid grid-cols-5 gap-1.5 w-full h-full opacity-80">
+                    {Array.from({ length: 25 }).map((_, i) => (
+                      <div
+                        key={i}
+                        className={`rounded-xs ${
+                          (i % 2 === 0 || i % 3 === 0) && i !== 12
+                            ? 'bg-slate-900'
+                            : 'bg-transparent'
+                        }`}
+                      />
+                    ))}
+                  </div>
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    <div className="w-10 h-10 rounded-full bg-[#008069] text-white flex items-center justify-center shadow-md">
+                      <Smartphone className="w-5 h-5" />
+                    </div>
+                  </div>
+                </div>
+
+                <ol className="text-right text-[11px] text-slate-600 space-y-1 list-decimal list-inside pr-1">
+                  <li>افتح تطبيق واتساب على هاتفك.</li>
+                  <li>اضغط على الإعدادات (أو القائمة ⋮) واختر <strong>"الأجهزة المرتبطة"</strong>.</li>
+                  <li>اضغط على <strong>"ربط جهاز"</strong> لتثبيت جلسة الإرسال المباشرة.</li>
+                </ol>
+              </div>
+
+              <button
+                onClick={() => {
+                  setIsSenderLinked(true);
+                  setIsQrModalOpen(false);
+                  addLog(`تم تثبيت رقم المُرسِل: ${senderPhone}`);
+                }}
+                className="w-full py-2.5 text-xs font-bold text-white bg-[#008069] hover:bg-[#006e5a] rounded-xl transition-colors cursor-pointer shadow-xs"
+              >
+                تأكيد اتصال حساب الواتساب
               </button>
             </div>
           </div>
