@@ -1,5 +1,21 @@
 export type MediaType = 'none' | 'image' | 'video' | 'document' | 'link';
 
+export type DispatchMode = 
+  | 'direct_cloud'       // إرسال سحابي مباشر عبر السيرفر بدون فتح أي نافذة متصفح نهائياً
+  | 'single_tab_flow'    // إرسال تتابعي ذكي عبر نافذة إرسال واحدة موحدة (تمنع إغراق الشاشة بالنوافذ)
+  | 'individual_popup'   // فتح نافذة لكل رقم يدوياً
+  | 'simulation';        // وضع المحاكاة والتدريب الداخلي
+
+export interface GatewayConfig {
+  gatewayType: 'meta_cloud' | 'custom_webhook' | 'local_qr_session';
+  phoneNumberId?: string;
+  accessToken?: string;
+  senderPhoneNumber?: string;
+  webhookUrl?: string;
+  sessionStatus: 'connected' | 'idle' | 'authorizing' | 'error';
+  lastError?: string;
+}
+
 export interface Contact {
   id: string;
   name: string;
@@ -48,16 +64,4 @@ export interface TutorialVideo {
   description: string;
   steps: string[];
   thumbnail: string;
-}
-
-export interface ClientLicense {
-  isActivated: boolean;
-  clientName: string;
-  clientPhone: string;
-  hardwareId: string;
-  licenseKey: string;
-  planName: string;
-  activationDate: string;
-  allowedDevices: number;
-  freeUpdatesUntil: string;
 }

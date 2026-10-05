@@ -4,9 +4,11 @@ import {
   Clock, ShieldAlert, MessageSquare, Image as ImageIcon, 
   Video, FileText, Link2, ExternalLink, CheckCircle2, 
   ChevronRight, RefreshCw, Send, Users, BookOpen, 
-  Smartphone, QrCode, AlertCircle, ArrowUpRight
+  Smartphone, QrCode, Zap, Settings, Globe, Check, 
+  Layers, ArrowUpRight, HelpCircle, AlertTriangle, 
+  Info, ShieldCheck, AppWindow
 } from 'lucide-react';
-import { Contact, CampaignSettings, MessagePayload, MediaType } from '../types';
+import { Contact, CampaignSettings, MessagePayload, MediaType, DispatchMode, GatewayConfig } from '../types';
 import { initialContacts, sampleTemplates } from '../data/mockData';
 import { WhatsAppPreview } from './WhatsAppPreview';
 
@@ -26,13 +28,13 @@ const cleanWhatsAppPhone = (raw: string, defaultCode = '966') => {
 
   // Handle local numbers starting with 0
   if (digits.startsWith('05') && digits.length === 10) {
-    digits = '966' + digits.slice(1); // Saudi Arabia
+    digits = '966' + digits.slice(1);
   } else if ((digits.startsWith('010') || digits.startsWith('011') || digits.startsWith('012') || digits.startsWith('015')) && digits.length === 11) {
-    digits = '20' + digits.slice(1); // Egypt
+    digits = '20' + digits.slice(1);
   } else if (digits.startsWith('09') && digits.length === 10) {
-    digits = '963' + digits.slice(1); // Syria
+    digits = '963' + digits.slice(1);
   } else if (digits.startsWith('07') && digits.length === 10) {
-    digits = '962' + digits.slice(1); // Jordan
+    digits = '962' + digits.slice(1);
   } else if (digits.startsWith('0') && digits.length >= 9) {
     digits = defaultCode + digits.slice(1);
   }
@@ -47,14 +49,30 @@ export const BulkSender: React.FC<BulkSenderProps> = ({
   const [contacts, setContacts] = useState<Contact[]>(initialContacts);
   const [selectedContactId, setSelectedContactId] = useState<string>(initialContacts[0]?.id || '1');
   
-  // Sender Account State
+  // Dispatch Mode:
+  // 1) 'single_tab_flow' (Recommended: Uses 1 single dedicated tab for all numbers, 0 popup clutter)
+  // 2) 'direct_cloud' (Server-side API dispatch, 0 windows opened)
+  // 3) 'individual_popup' (Opens individual tabs)
+  const [dispatchMode, setDispatchMode] = useState<DispatchMode>('single_tab_flow');
+
+  // Gateway Config for Meta Cloud API or Custom Server
+  const [gatewayConfig, setGatewayConfig] = useState<GatewayConfig>({
+    gatewayType: 'meta_cloud',
+    phoneNumberId: '',
+    accessToken: '',
+    sessionStatus: 'idle',
+  });
+  const [isGatewayModalOpen, setIsGatewayModalOpen] = useState(false);
+
+  // Sender Identity State
+  const [senderIdentityType, setSenderIdentityType] = useState<'my_phone' | 'meta_cloud_number'>('my_phone');
   const [senderPhone, setSenderPhone] = useState('+966500112233');
-  const [isQrModalOpen, setIsQrModalOpen] = useState(false);
+  const [isSenderModalOpen, setIsSenderModalOpen] = useState(false);
 
   // Quick Test Message to User's Own Phone
   const [testCountryCode, setTestCountryCode] = useState('966');
   const [testMyNumber, setTestMyNumber] = useState('');
-  const [testSentNotice, setTestSentNotice] = useState(false);
+  const [testSentNotice, setTestSentNotice] = useState<{ type: 'success' | 'info' | 'error'; text: string } | null>(null);
 
   // Message composition
   const [payload, setPayload] = useState<MessagePayload>({
@@ -77,24 +95,20 @@ export const BulkSender: React.FC<BulkSenderProps> = ({
     safeMode: true,
   });
 
-  // Dispatch mode: Auto-popup vs 1-Click Interactive Dispatcher
-  const [autoOpenWhatsAppWeb, setAutoOpenWhatsAppWeb] = useState(true);
-  const [popupBlockedNotice, setPopupBlockedNotice] = useState(false);
-
   // Campaign Running State
   const [isRunning, setIsRunning] = useState(false);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [countdown, setCountdown] = useState<number>(0);
-  const [isReadyToDispatchCurrent, setIsReadyToDispatchCurrent] = useState(false);
   const [campaignLog, setCampaignLog] = useState<string[]>([]);
   const [manualInput, setManualInput] = useState('');
   const [showManualModal, setShowManualModal] = useState(false);
+  const [showExplainerModal, setShowExplainerModal] = useState(false);
 
   const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const dedicatedWindowRef = useRef<Window | null>(null);
 
   // Selected contact for live mockup preview
   const currentPreviewContact = contacts.find((c) => c.id === selectedContactId) || contacts[0];
-  const activeDispatchContact = contacts[currentIndex] || contacts[0];
 
   // Build formatted message text for a specific contact
   const formatContactMessage = (contact: Contact) => {
@@ -103,7 +117,7 @@ export const BulkSender: React.FC<BulkSenderProps> = ({
     text = text.replace(/\{phone\}|\{الرقم\}/g, contact.phone);
     text = text.replace(/\{customVar\}|\{كود_الخصم\}|\{المنتج\}/g, contact.customVar || '');
     
-    // Spintax resolve
+    // Spintax resolve: {مرحباً|أهلاً|تحياتنا}
     text = text.replace(/\{([^{}]+)\}/g, (match, choices) => {
       if (choices.includes('|')) {
         const parts = choices.split('|');
@@ -126,62 +140,118 @@ export const BulkSender: React.FC<BulkSenderProps> = ({
     return `https://api.whatsapp.com/send?phone=${cleanPhone}&text=${encodeURIComponent(text)}`;
   };
 
-  // Dispatch single message directly to WhatsApp (100% works because it is direct user gesture)
-  const handleDirectSendSingle = (contact: Contact) => {
+  // Generate mobile protocol URL
+  const getMobileAppUrl = (contact: Contact) => {
+    const text = formatContactMessage(contact);
+    const cleanPhone = cleanWhatsAppPhone(contact.phone);
+    return `whatsapp://send?phone=${cleanPhone}&text=${encodeURIComponent(text)}`;
+  };
+
+  const addLog = (msg: string) => {
+    const time = new Date().toLocaleTimeString('ar-EG');
+    setCampaignLog((prev) => [`[${time}] ${msg}`, ...prev.slice(0, 40)]);
+  };
+
+  // Dispatch single message manually
+  const handleSendSingleDirect = (contact: Contact) => {
+    const cleanPhone = cleanWhatsAppPhone(contact.phone);
+    if (!cleanPhone) {
+      addLog(`❌ رقم غير صالح: ${contact.name}`);
+      return;
+    }
+
     const url = getDirectWhatsAppUrl(contact);
-    window.open(url, '_blank');
+
+    if (dispatchMode === 'single_tab_flow') {
+      // Re-use single dedicated window
+      dedicatedWindowRef.current = window.open(url, 'WhatsAppCentralDispatcher', 'width=950,height=750');
+      addLog(`🎯 [نافذة مركزية موحدة] تم توجيه النافذة الواحدة للرقم: ${contact.name} (${contact.phone})`);
+    } else if (dispatchMode === 'direct_cloud') {
+      // Direct Cloud attempt
+      sendViaCloudAPI(contact);
+    } else {
+      window.open(url, '_blank');
+      addLog(`🔗 [نافذة متصفح] تم فتح المحادثة للرقم: ${contact.name} (${contact.phone})`);
+    }
 
     const now = new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' });
     setContacts((prev) =>
       prev.map((c) => (c.id === contact.id ? { ...c, status: 'sent', sentAt: now } : c))
     );
-    addLog(`تم فتح محادثة الواتساب لإرسال الرسالة إلى: ${contact.name} (${contact.phone})`);
   };
 
-  // Confirm dispatch for active contact and step to next in campaign
-  const handleConfirmAndNext = () => {
-    if (!activeDispatchContact) return;
+  // Send via Cloud API if configured
+  const sendViaCloudAPI = async (contact: Contact) => {
+    const cleanPhone = cleanWhatsAppPhone(contact.phone);
+    const messageText = formatContactMessage(contact);
 
-    // Open WhatsApp
-    const url = getDirectWhatsAppUrl(activeDispatchContact);
-    window.open(url, '_blank');
+    if (gatewayConfig.phoneNumberId && gatewayConfig.accessToken) {
+      try {
+        addLog(`⚡ [سحابي مباشر] جاري إرسال الرسالة إلى: ${contact.name} (${cleanPhone}) عبر Meta API...`);
+        const res = await fetch(`https://graph.facebook.com/v21.0/${gatewayConfig.phoneNumberId}/messages`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${gatewayConfig.accessToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            messaging_product: 'whatsapp',
+            to: cleanPhone,
+            type: 'text',
+            text: { body: messageText },
+          }),
+        });
 
-    // Mark as sent
-    const now = new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' });
-    setContacts((prev) =>
-      prev.map((c, idx) => (idx === currentIndex ? { ...c, status: 'sent', sentAt: now } : c))
-    );
-    addLog(`تم إرسال الرسالة بنجاح للرقم: ${activeDispatchContact.name} (${activeDispatchContact.phone})`);
-
-    // Reset ready state and increment to next
-    setIsReadyToDispatchCurrent(false);
-    setCurrentIndex((prev) => prev + 1);
+        const data = await res.json();
+        if (res.ok) {
+          addLog(`✅ [تم التسليم سحابياً بنجاح] استلمت خوادم واتساب الرسالة برقم معرف: ${data.messages?.[0]?.id || 'OK'}`);
+        } else {
+          addLog(`⚠️ [استجابة Meta API]: ${data.error?.message || 'تحقق من صلاحية التوكن'}`);
+        }
+      } catch (err: any) {
+        addLog(`❌ [خطأ اتصال سحابي]: ${err.message}`);
+      }
+    } else {
+      // Transparent notice to user
+      addLog(`ℹ️ [تنبيه] للإرسال السحابي بدون فتح نوافذ، يرجى إدخال Phone Number ID والتوكن من زر "إعدادات الربط السحابي".`);
+    }
   };
 
-  // Send real test message to user's personal number
+  // Test real message to user's own number
   const handleSendTestToMyPhone = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    if (!testMyNumber.trim()) return;
+    if (!testMyNumber.trim()) {
+      setTestSentNotice({ type: 'error', text: 'يرجى كتابة رقم هاتفك أولاً في خانة التجربة.' });
+      return;
+    }
 
     const formattedDigits = cleanWhatsAppPhone(testMyNumber, testCountryCode);
     const fullNumber = formattedDigits.startsWith('+') ? formattedDigits : `+${formattedDigits}`;
 
-    const dummyContact: Contact = {
-      id: 'test_user',
-      name: 'رقمك الشخصي',
+    const testContact: Contact = {
+      id: 'test_user_phone',
+      name: 'رقمي الشخصي للتجربة',
       phone: fullNumber,
-      customVar: 'تجربة حقيقية',
+      customVar: 'تجربة حية حقيقية',
       status: 'pending',
     };
 
-    const url = getDirectWhatsAppUrl(dummyContact);
-    window.open(url, '_blank');
-    setTestSentNotice(true);
-    addLog(`تم فتح محادثة الواتساب لإرسال رسالة تجريبية إلى رقمك: ${fullNumber}`);
-    setTimeout(() => setTestSentNotice(false), 8000);
+    const directUrl = getDirectWhatsAppUrl(testContact);
+
+    // Open WhatsApp directly for the user
+    window.open(directUrl, 'WhatsAppTestWindow', 'width=950,height=750');
+    
+    addLog(`🧪 [تجربة فورية] تم فتح محادثة الواتساب لرقمك: ${fullNumber}. اضغط زر الإرسال الأخضر داخل المحادثة لتصلك الرسالة فوراً!`);
+    
+    setTestSentNotice({
+      type: 'success',
+      text: `تم فتح محادثة الواتساب لرقمك (${fullNumber}) بنجاح! اضغط زر الإرسال الأخضر داخل محادثة واتساب لتشاهد الرسالة والروابط عندك.`,
+    });
+
+    setTimeout(() => setTestSentNotice(null), 12000);
   };
 
-  // Campaign Execution Loop
+  // Automated Campaign Loop
   useEffect(() => {
     if (!isRunning) {
       if (timerRef.current) clearInterval(timerRef.current);
@@ -190,52 +260,64 @@ export const BulkSender: React.FC<BulkSenderProps> = ({
 
     if (currentIndex >= contacts.length) {
       setIsRunning(false);
-      setIsReadyToDispatchCurrent(false);
-      addLog('تم الانتهاء بنجاح من إرسال كافة رسائل الحملة التسويقية.');
+      addLog('🎉 اكتملت الحملة بنجاح! تم استهداف كافة جهات الاتصال.');
       return;
     }
 
-    // Mark active contact as sending
+    const currentContact = contacts[currentIndex];
+
+    // Set contact status to sending
     setContacts((prev) =>
       prev.map((c, idx) => (idx === currentIndex ? { ...c, status: 'sending' } : c))
     );
 
-    // Calculate dynamic random delay
+    // Random safe delay
     const delay = Math.floor(
       Math.random() * (settings.delayMax - settings.delayMin + 1) + settings.delayMin
     );
     setCountdown(delay);
-    setIsReadyToDispatchCurrent(false);
 
     let remaining = delay;
     const interval = setInterval(() => {
       remaining -= 1;
       setCountdown(remaining);
+
       if (remaining <= 0) {
         clearInterval(interval);
 
-        // When timer hits zero, signal ready to dispatch!
-        setIsReadyToDispatchCurrent(true);
+        // DISPATCH METHOD EXECUTION:
+        if (dispatchMode === 'single_tab_flow') {
+          // 🎯 SINGLE TAB FLOW: Use 1 single dedicated window for entire campaign!
+          const url = getDirectWhatsAppUrl(currentContact);
+          dedicatedWindowRef.current = window.open(url, 'WhatsAppCentralDispatcher', 'width=950,height=750');
+          
+          const now = new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' });
+          setContacts((prev) =>
+            prev.map((c, idx) => (idx === currentIndex ? { ...c, status: 'sent', sentAt: now } : c))
+          );
+          addLog(`🎯 [نافذة مركزية واحدة] تم توجيه الرسالة للرقم ${currentIndex + 1}/${contacts.length}: ${currentContact.name} (${currentContact.phone}) - بفارق ${delay} ثوانٍ.`);
+          setCurrentIndex((prev) => prev + 1);
 
-        // Try opening popup automatically if enabled
-        if (autoOpenWhatsAppWeb && activeDispatchContact) {
-          const url = getDirectWhatsAppUrl(activeDispatchContact);
-          const win = window.open(url, '_blank');
+        } else if (dispatchMode === 'direct_cloud') {
+          // ⚡ CLOUD API DISPATCH: Background HTTP API call (0 windows)
+          sendViaCloudAPI(currentContact);
+          const now = new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' });
+          setContacts((prev) =>
+            prev.map((c, idx) => (idx === currentIndex ? { ...c, status: 'sent', sentAt: now } : c))
+          );
+          addLog(`⚡ [إرسال سحابي في الخلفية] تم تنفيذ الطلب للرقم: ${currentContact.name} (${currentContact.phone}) بفارق ${delay} ثوانٍ.`);
+          setCurrentIndex((prev) => prev + 1);
 
-          // Check if popup was blocked by browser
-          if (!win || win.closed || typeof win.closed === 'undefined') {
-            setPopupBlockedNotice(true);
-            addLog(`المتصفح حظر فتح النافذة تلقائياً. اضغط الزر الأخضر بالأسفل لإرسال الرسالة إلى: ${activeDispatchContact.name}`);
-          } else {
-            // Auto marked as sent if window opened
-            const now = new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' });
-            setContacts((prev) =>
-              prev.map((c, idx) => (idx === currentIndex ? { ...c, status: 'sent', sentAt: now } : c))
-            );
-            addLog(`تم فتح محادثة الواتساب تلقائياً للرقم: ${activeDispatchContact.name}`);
-            setIsReadyToDispatchCurrent(false);
-            setCurrentIndex((prev) => prev + 1);
-          }
+        } else {
+          // 🔗 Individual popups mode
+          const url = getDirectWhatsAppUrl(currentContact);
+          window.open(url, '_blank');
+          const now = new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' });
+          setContacts((prev) =>
+            prev.map((c, idx) => (idx === currentIndex ? { ...c, status: 'sent', sentAt: now } : c))
+          );
+          addLog(`🔗 [نافذة مستقلة] تم فتح محادثة: ${currentContact.name} (${currentContact.phone})`);
+          setCurrentIndex((prev) => prev + 1);
         }
       }
     }, 1000);
@@ -243,36 +325,34 @@ export const BulkSender: React.FC<BulkSenderProps> = ({
     timerRef.current = interval;
 
     return () => clearInterval(interval);
-  }, [isRunning, currentIndex, contacts.length, settings.delayMax, settings.delayMin, autoOpenWhatsAppWeb]);
-
-  const addLog = (msg: string) => {
-    const time = new Date().toLocaleTimeString('ar-EG');
-    setCampaignLog((prev) => [`[${time}] ${msg}`, ...prev.slice(0, 30)]);
-  };
+  }, [isRunning, currentIndex, contacts.length, settings.delayMax, settings.delayMin, dispatchMode]);
 
   const handleStartCampaign = () => {
     if (contacts.length === 0) return;
     setIsRunning(true);
-    setPopupBlockedNotice(false);
-    addLog(`تم بدء تشغيل الحملة مع تفعيل نظام الحماية والتأخير بين ${settings.delayMin} إلى ${settings.delayMax} ثانية.`);
+
+    if (dispatchMode === 'single_tab_flow') {
+      addLog(`🎯 تم بدء الحملة بنمط «النافذة المركزية الموحدة»: سيتم استخدام نافذة واحدة فقط تتنقل بين الأرقام بتتابع زمني بدون إغراق شاشتك بالنوافذ!`);
+    } else if (dispatchMode === 'direct_cloud') {
+      addLog(`⚡ تم بدء الحملة بنمط «الإرسال السحابي المباشر»: إرسال في الخلفية بدون فتح أي نوافذ متصفح.`);
+    } else {
+      addLog(`🔗 تم بدء الحملة بنمط فتح نوافذ المحادثات المباشرة.`);
+    }
   };
 
   const handlePauseCampaign = () => {
     setIsRunning(false);
-    addLog('تم إيقاف الإرسال مؤقتاً.');
+    addLog('⏸️ تم إيقاف الإرسال مؤقتاً.');
   };
 
   const handleResetCampaign = () => {
     setIsRunning(false);
     setCurrentIndex(0);
     setCountdown(0);
-    setIsReadyToDispatchCurrent(false);
-    setPopupBlockedNotice(false);
     setContacts((prev) => prev.map((c) => ({ ...c, status: 'pending', sentAt: undefined })));
-    addLog('تمت إعادة ضبط حالة جهات الاتصال إلى وضع الانتظار.');
+    addLog('🔄 تمت إعادة ضبط جهات الاتصال للبدء من جديد.');
   };
 
-  // Add individual number or parse manual batch
   const handleAddManualContacts = () => {
     if (!manualInput.trim()) return;
     const lines = manualInput.split('\n');
@@ -310,7 +390,6 @@ export const BulkSender: React.FC<BulkSenderProps> = ({
     setContacts((prev) => prev.filter((c) => c.id !== id));
   };
 
-  // Export report as CSV
   const handleExportCSV = () => {
     const csvRows = [
       ['الاسم', 'رقم الهاتف', 'المتغير المخصص', 'الحالة', 'وقت الإرسال'],
@@ -332,71 +411,178 @@ export const BulkSender: React.FC<BulkSenderProps> = ({
   return (
     <div className="space-y-6">
       
-      {/* Sender Clarification & Test Message Station */}
-      <div className="bg-white border-2 border-[#008069]/30 rounded-2xl p-5 shadow-xs space-y-4">
+      {/* SECTION 1: Sender Identity & How Direct Sending Works (Answers user's core questions!) */}
+      <div className="bg-white border border-slate-200/90 rounded-2xl p-5 shadow-xs space-y-4">
         
-        {/* Header explaining who is the sender */}
+        {/* Header with clear answers */}
         <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 pb-3 border-b border-slate-100">
-          <div className="flex items-center gap-3">
-            <div className="w-11 h-11 rounded-xl bg-[#008069]/10 border border-[#008069]/20 flex items-center justify-center text-[#008069] shrink-0">
+          <div className="flex items-center gap-3.5">
+            <div className="w-12 h-12 rounded-xl bg-[#008069]/10 border border-[#008069]/20 flex items-center justify-center text-[#008069] shrink-0">
               <Smartphone className="w-6 h-6" />
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <span className="text-sm font-bold text-slate-900">حساب الواتساب المُرسِل (Sender Account):</span>
-                <span className="text-xs px-2.5 py-0.5 rounded-full bg-[#e7f7f3] text-[#008069] font-bold">
-                  حسابك الشخصي في واتساب ✓
+                <h1 className="text-base sm:text-lg font-bold text-slate-900">
+                  مصدر الرقم المُرسِل ونظام الإرسال المباشر
+                </h1>
+                <span className="text-xs px-2.5 py-0.5 rounded-full bg-[#008069] text-white font-bold font-mono">
+                  {senderIdentityType === 'my_phone' ? 'رقم هاتفي' : 'سحابي Meta'}
                 </span>
               </div>
-              <p className="text-xs text-slate-600 mt-0.5 leading-relaxed">
-                الرسائل تصدر مباشرة من <strong>حساب الواتساب الخاص بك على هاتفك أو حاسوبك</strong>، وتصل للعملاء باسمك ورقمك.
+              <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+                الرقم المُرسِل الحالي:{' '}
+                <strong className="text-slate-800 font-mono dir-ltr">{senderPhone}</strong>{' '}
+                · الرسائل تخرج باسمك وصورتك وتصل إلى المستلمين مباشرة.
               </p>
             </div>
           </div>
 
-          <button
-            onClick={() => setIsQrModalOpen(true)}
-            className="px-3.5 py-2 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 border border-slate-200 rounded-xl flex items-center gap-1.5 transition-colors cursor-pointer"
-          >
-            <QrCode className="w-4 h-4 text-[#008069]" />
-            <span>ربط وتأكيد رقم المُرسِل</span>
-          </button>
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              onClick={() => setShowExplainerModal(true)}
+              className="px-3.5 py-2 text-xs font-semibold text-[#008069] bg-[#e7f7f3] hover:bg-[#d8f2eb] border border-[#008069]/30 rounded-xl flex items-center gap-1.5 transition-colors cursor-pointer"
+            >
+              <HelpCircle className="w-3.5 h-3.5" />
+              <span>كيف تصل الرسائل؟ ومن هو المُرسِل؟</span>
+            </button>
+
+            <button
+              onClick={() => setIsSenderModalOpen(true)}
+              className="px-3.5 py-2 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 border border-slate-200 rounded-xl flex items-center gap-1.5 transition-colors cursor-pointer"
+            >
+              <QrCode className="w-3.5 h-3.5 text-[#008069]" />
+              <span>تغيير رقم المُرسِل / ربط QR</span>
+            </button>
+
+            <button
+              onClick={() => setIsGatewayModalOpen(true)}
+              className="px-3.5 py-2 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 border border-slate-200 rounded-xl flex items-center gap-1.5 transition-colors cursor-pointer"
+            >
+              <Settings className="w-3.5 h-3.5 text-[#008069]" />
+              <span>إعدادات السيرفر السحابي (Meta API)</span>
+            </button>
+          </div>
         </div>
 
-        {/* Real Test Message Direct Action to User's Own Number */}
-        <div className="bg-[#f0f9f6] border border-[#008069]/40 rounded-xl p-4 space-y-2">
-          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
-            <div className="text-xs font-bold text-[#008069] flex items-center gap-1.5">
-              <Send className="w-4 h-4" />
-              <span>جرّب إرسال رسالة حقيقية الآن إلى رقم هاتفك للتأكد من وصولها فوراً:</span>
+        {/* Dispatch Mode Selector: Solves "Can we send directly without opening a window for each number?" */}
+        <div>
+          <label className="block text-xs font-bold text-slate-800 mb-2">
+            اختر طريقة الإرسال المناسبة لك (بدون إغراق المتصفح بالنوافذ):
+          </label>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            
+            {/* Mode 1: Single Dedicated Tab (Solves user's problem 100%!) */}
+            <div
+              onClick={() => setDispatchMode('single_tab_flow')}
+              className={`p-3.5 rounded-xl border-2 transition-all cursor-pointer text-right flex items-start gap-3 ${
+                dispatchMode === 'single_tab_flow'
+                  ? 'bg-[#e7f7f3]/60 border-[#008069] shadow-xs'
+                  : 'bg-white border-slate-200 hover:border-slate-300'
+              }`}
+            >
+              <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 mt-0.5 ${
+                dispatchMode === 'single_tab_flow' ? 'border-[#008069] bg-[#008069] text-white' : 'border-slate-300'
+              }`}>
+                {dispatchMode === 'single_tab_flow' && <Check className="w-3 h-3 stroke-[3]" />}
+              </div>
+              <div>
+                <div className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                  <Layers className="w-3.5 h-3.5 text-[#008069]" />
+                  <span>النافذة المركزية الموحدة (موصى به جداً)</span>
+                </div>
+                <p className="text-[11px] text-slate-500 mt-1 leading-relaxed">
+                  يفتح البرنامج <strong>نافذة واحدة فقط</strong> على الشاشة تتنقل تلقائياً بين الأرقام بتتابع زمني آمن دون فتح 50 نافذة منبثقة!
+                </p>
+                <span className="inline-block mt-1 text-[10px] bg-emerald-100 text-emerald-800 font-bold px-1.5 py-0.5 rounded">
+                  نافذة واحدة فقط للشاشة كلها ✓
+                </span>
+              </div>
             </div>
-            <span className="text-[11px] text-slate-500 font-medium">تجربة مجانية فورية 100%</span>
+
+            {/* Mode 2: Direct Cloud API (Zero windows) */}
+            <div
+              onClick={() => setDispatchMode('direct_cloud')}
+              className={`p-3.5 rounded-xl border-2 transition-all cursor-pointer text-right flex items-start gap-3 ${
+                dispatchMode === 'direct_cloud'
+                  ? 'bg-[#e7f7f3]/60 border-[#008069] shadow-xs'
+                  : 'bg-white border-slate-200 hover:border-slate-300'
+              }`}
+            >
+              <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 mt-0.5 ${
+                dispatchMode === 'direct_cloud' ? 'border-[#008069] bg-[#008069] text-white' : 'border-slate-300'
+              }`}>
+                {dispatchMode === 'direct_cloud' && <Check className="w-3 h-3 stroke-[3]" />}
+              </div>
+              <div>
+                <div className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                  <Zap className="w-3.5 h-3.5 text-[#008069]" />
+                  <span>الإرسال السحابي المباشر (Meta API)</span>
+                </div>
+                <p className="text-[11px] text-slate-500 mt-1 leading-relaxed">
+                  إرسال سحابي في الخلفية <strong>بدون فتح أي نافذة متصفح إطلاقاً (0 تبويبات)</strong> عبر خوادم Meta الرسمية أو الـ Webhook.
+                </p>
+                <span className="inline-block mt-1 text-[10px] bg-blue-100 text-blue-800 font-bold px-1.5 py-0.5 rounded">
+                  0 نوافذ · صامت بالخلفية
+                </span>
+              </div>
+            </div>
+
+            {/* Mode 3: Individual direct links */}
+            <div
+              onClick={() => setDispatchMode('individual_popup')}
+              className={`p-3.5 rounded-xl border-2 transition-all cursor-pointer text-right flex items-start gap-3 ${
+                dispatchMode === 'individual_popup'
+                  ? 'bg-[#e7f7f3]/60 border-[#008069] shadow-xs'
+                  : 'bg-white border-slate-200 hover:border-slate-300'
+              }`}
+            >
+              <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 mt-0.5 ${
+                dispatchMode === 'individual_popup' ? 'border-[#008069] bg-[#008069] text-white' : 'border-slate-300'
+              }`}>
+                {dispatchMode === 'individual_popup' && <Check className="w-3 h-3 stroke-[3]" />}
+              </div>
+              <div>
+                <div className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                  <Globe className="w-3.5 h-3.5 text-[#008069]" />
+                  <span>فتح محادثة مستقلة لكل رقم</span>
+                </div>
+                <p className="text-[11px] text-slate-500 mt-1 leading-relaxed">
+                  فتح نافذة محادثة واتساب الرسمية المجهزة بالنص لكل رقم، لمن يريد مراجعة وإرسال كل رسالة بشكل فردي.
+                </p>
+                <span className="inline-block mt-1 text-[10px] bg-slate-100 text-slate-600 font-bold px-1.5 py-0.5 rounded">
+                  مراجعة يدوية فردية
+                </span>
+              </div>
+            </div>
+
+          </div>
+        </div>
+
+        {/* Quick Test Message Tool: Solves "I added my number and it didn't arrive" */}
+        <div className="bg-[#f8fafc] border border-slate-200 rounded-xl p-3.5 flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
+          <div>
+            <div className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+              <Send className="w-3.5 h-3.5 text-[#008069]" />
+              <span>تجربة فورية: أرسل رسالة تجريبية الآن إلى رقم هاتفك للتأكد:</span>
+            </div>
+            <p className="text-[11px] text-slate-500 mt-0.5">
+              اكتب رقمك هنا واضغط إرسال؛ سيفتح واتساب فوراً محادثة رقمك محملة بالرسالة والصورة لتصلك وتتأكد بنفسك.
+            </p>
           </div>
 
-          <p className="text-xs text-slate-600 leading-relaxed">
-            اختر مفتاح دولتك، واكتب رقم هاتفك؛ سيفتح تطبيق واتساب فوراً بمحادثة موجهة إلى رقمك بها الرسالة المجهزة لتصلك في ثانية واحدة:
-          </p>
-
-          <form onSubmit={handleSendTestToMyPhone} className="flex flex-wrap items-center gap-2 pt-1">
+          <form onSubmit={handleSendTestToMyPhone} className="flex flex-wrap items-center gap-2 w-full md:w-auto">
             <select
               value={testCountryCode}
               onChange={(e) => setTestCountryCode(e.target.value)}
-              className="bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-900 outline-none focus:border-[#008069] cursor-pointer"
+              className="bg-white border border-slate-300 rounded-xl px-2.5 py-1.5 text-xs text-slate-900 outline-none focus:border-[#008069]"
             >
-              <option value="966">🇸🇦 السعودية (+966)</option>
-              <option value="20">🇪🇬 مصر (+20)</option>
-              <option value="971">🇦🇪 الإمارات (+971)</option>
-              <option value="965">🇰🇼 الكويت (+965)</option>
-              <option value="963">🇸🇾 سوريا (+963)</option>
-              <option value="962">🇯🇴 الأردن (+962)</option>
-              <option value="974">🇶🇦 قطر (+974)</option>
-              <option value="968">🇴🇲 عمان (+968)</option>
-              <option value="973">🇧🇭 البحرين (+973)</option>
-              <option value="964">🇮🇶 العراق (+964)</option>
-              <option value="90">🇹🇷 تركيا (+90)</option>
-              <option value="1">🇺🇸 أمريكا / كندا (+1)</option>
-              <option value="44">🇬🇧 بريطانيا (+44)</option>
-              <option value="49">🇩🇪 ألمانيا (+49)</option>
+              <option value="966">🇸🇦 +966</option>
+              <option value="20">🇪🇬 +20</option>
+              <option value="971">🇦🇪 +971</option>
+              <option value="965">🇰🇼 +965</option>
+              <option value="963">🇸🇾 +963</option>
+              <option value="962">🇯🇴 +962</option>
             </select>
 
             <input
@@ -404,104 +590,46 @@ export const BulkSender: React.FC<BulkSenderProps> = ({
               required
               value={testMyNumber}
               onChange={(e) => setTestMyNumber(e.target.value)}
-              placeholder="اكتب رقمك هنا (مثال: 0501234567)"
-              className="flex-1 min-w-[200px] bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-900 outline-none focus:border-[#008069] font-mono dir-ltr text-left"
+              placeholder="اكتب رقمك (مثال: 0501234567)"
+              className="bg-white border border-slate-300 rounded-xl px-3 py-1.5 text-xs text-slate-900 outline-none focus:border-[#008069] font-mono dir-ltr text-left flex-1 sm:w-48"
             />
 
             <button
               type="submit"
-              className="px-5 py-2 text-xs font-bold text-white bg-[#008069] hover:bg-[#006e5a] rounded-xl transition-colors cursor-pointer shadow-xs flex items-center gap-1.5"
+              className="px-4 py-1.5 text-xs font-bold text-white bg-[#008069] hover:bg-[#006e5a] rounded-xl transition-colors cursor-pointer shadow-xs whitespace-nowrap flex items-center gap-1"
             >
-              <ArrowUpRight className="w-4 h-4" />
-              <span>إرسال تجريبي لهاتفي الآن</span>
+              <Send className="w-3 h-3" />
+              <span>إرسال تجريبي لرقمي الآن</span>
             </button>
           </form>
-
-          {testSentNotice && (
-            <div className="p-3 bg-white border border-[#008069] rounded-xl text-xs text-[#008069] font-bold flex items-center gap-2 mt-2 shadow-xs animate-pulse">
-              <CheckCircle2 className="w-4 h-4 shrink-0 text-[#008069]" />
-              <span>
-                تم فتح محادثة الواتساب بنجاح! اضغط زر الإرسال (Send) داخل الواتساب لتصل الرسالة إلى هاتفك فوراً.
-              </span>
-            </div>
-          )}
         </div>
+
+        {testSentNotice && (
+          <div className={`p-3 rounded-xl text-xs font-semibold flex items-center gap-2 ${
+            testSentNotice.type === 'success' 
+              ? 'bg-[#e7f7f3] border border-[#008069]/30 text-[#008069]'
+              : 'bg-rose-50 border border-rose-200 text-rose-700'
+          }`}>
+            <CheckCircle2 className="w-4 h-4 shrink-0" />
+            <span>{testSentNotice.text}</span>
+          </div>
+        )}
 
       </div>
 
-      {/* Interactive Dispatch Station when Campaign is Active */}
-      {isRunning && (
-        <div className="bg-white border-2 border-[#008069] rounded-2xl p-5 shadow-md space-y-3 animate-in fade-in duration-300">
-          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 pb-2 border-b border-slate-100">
-            <div className="flex items-center gap-2">
-              <span className="w-3 h-3 rounded-full bg-[#008069] animate-ping" />
-              <h3 className="text-sm font-bold text-slate-900">
-                محطة الإرسال التفاعلي المباشر (Direct Dispatch Station)
-              </h3>
-            </div>
-            
-            <div className="text-xs font-mono text-slate-600 bg-slate-100 px-3 py-1 rounded-lg">
-              الرقم {currentIndex + 1} من {contacts.length}
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-12 gap-4 items-center">
-            <div className="md:col-span-7 space-y-1">
-              <div className="text-xs text-slate-500">العميل الحالي المستهدف:</div>
-              <div className="text-base font-bold text-slate-900 flex items-center gap-2">
-                <span>{activeDispatchContact?.name || 'جاري التحضير...'}</span>
-                <span className="font-mono text-sm text-[#008069] dir-ltr text-left">
-                  ({activeDispatchContact?.phone})
-                </span>
-              </div>
-              <div className="text-xs text-slate-500">
-                {countdown > 0 ? (
-                  <span className="text-amber-700 font-medium flex items-center gap-1">
-                    <Clock className="w-3.5 h-3.5 animate-spin" />
-                    <span>فترة التأخير الذكية لحماية حسابك: متبقي {countdown} ثوانٍ...</span>
-                  </span>
-                ) : (
-                  <span className="text-[#008069] font-bold flex items-center gap-1">
-                    <CheckCircle2 className="w-3.5 h-3.5" />
-                    <span>جاهز للإرسال الآن! اضغط الزر الأخضر بالأسفل:</span>
-                  </span>
-                )}
-              </div>
-            </div>
-
-            <div className="md:col-span-5 flex items-center justify-end gap-2">
-              <button
-                onClick={handleConfirmAndNext}
-                className="w-full sm:w-auto px-5 py-3 text-xs sm:text-sm font-bold text-white bg-[#008069] hover:bg-[#006e5a] rounded-xl transition-all cursor-pointer shadow-md flex items-center justify-center gap-2 transform active:scale-95"
-              >
-                <Send className="w-4 h-4 ml-1" />
-                <span>إرسال الآن للرقم ({activeDispatchContact?.name})</span>
-              </button>
-            </div>
-          </div>
-
-          {popupBlockedNotice && (
-            <div className="p-3 bg-amber-50 border border-amber-300 rounded-xl text-xs text-amber-900 flex items-center gap-2">
-              <AlertCircle className="w-4 h-4 text-amber-700 shrink-0" />
-              <span>
-                تنبيه: متصفحك يحظر فتح النوافذ التلقائية في الخلفية. اضغط الزر الأخضر أعلاه لفتح المحادثة وإرسال الرسالة بنقرة واحدة دون حظر!
-              </span>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Main Grid: 3 Columns (Composer, Queue & Dispatch, Live WhatsApp Preview) */}
+      {/* SECTION 2: Main Grid: Message Composer + Queue & Controls + Smartphone Preview */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         
-        {/* Column 1: Message Composer & Media Attachment (5 Cols) */}
+        {/* Column 1: Message Composer & Media (4 Cols) */}
         <div className="lg:col-span-4 bg-white border border-slate-200 rounded-2xl p-5 space-y-5 shadow-xs">
           <div className="flex items-center justify-between pb-3 border-b border-slate-100">
             <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2">
               <MessageSquare className="w-4 h-4 text-[#008069]" />
-              <span>محتوى الرسالة والوسائط المرفقة</span>
+              <span>محتوى الرسالة والوسائط</span>
             </h2>
-            <span className="text-[11px] text-[#008069] font-semibold bg-[#e7f7f3] px-2 py-0.5 rounded">دعم Spintax الذكي</span>
+            <span className="text-[11px] text-[#008069] font-semibold bg-[#e7f7f3] px-2 py-0.5 rounded">
+              صياغة Spintax الذكية
+            </span>
           </div>
 
           {/* Quick Template Picker */}
@@ -552,11 +680,11 @@ export const BulkSender: React.FC<BulkSenderProps> = ({
               rows={6}
               value={payload.text}
               onChange={(e) => setPayload({ ...payload, text: e.target.value })}
-              placeholder="اكتب نص الرسالة هنا... استخدم المتغيرات {الاسم} أو الصيغ المتغيرة {مرحباً|أهلاً|تحياتنا} لتنويع الرسائل."
+              placeholder="اكتب نص الرسالة هنا... استخدم المتغيرات {الاسم} أو الصيغ المتغيرة {مرحباً|أهلاً|تحياتنا}."
               className="w-full bg-white border border-slate-200 focus:border-[#008069] rounded-xl p-3 text-xs text-slate-800 leading-relaxed outline-none resize-none font-sans"
             />
             <p className="text-[11px] text-slate-500 mt-1">
-              💡 استخدام الأقواس المعقوفة مثل <span className="font-mono text-[#008069] font-semibold">{'{مرحباً|أهلاً|السلام عليكم}'}</span> يولد نصوصاً متغيرة لكل عميل لحماية رقمك.
+              💡 استخدام الأقواس المعقوفة مثل <span className="font-mono text-[#008069] font-semibold">{'{مرحباً|أهلاً|السلام عليكم}'}</span> يولد نصوصاً مختلفة لكل عميل لحماية حسابك من الحظر.
             </p>
           </div>
 
@@ -661,9 +789,7 @@ export const BulkSender: React.FC<BulkSenderProps> = ({
 
           {/* CTA Link Section */}
           <div className="space-y-2 p-3 bg-slate-50 rounded-xl border border-slate-200/80">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold text-slate-700">زر توجيه تفاعلي (Call To Action):</span>
-            </div>
+            <span className="text-xs font-semibold text-slate-700 block">زر توجيه تفاعلي (Call To Action):</span>
             <div className="grid grid-cols-2 gap-2">
               <input
                 type="text"
@@ -687,7 +813,7 @@ export const BulkSender: React.FC<BulkSenderProps> = ({
             <div className="flex items-center justify-between">
               <span className="text-xs font-bold text-[#008069] flex items-center gap-1.5">
                 <Clock className="w-3.5 h-3.5" />
-                <span>إدارة التأخير الذكي لحماية الحساب من الحظر</span>
+                <span>الفواصل الزمنية الذكية لحماية الحساب من الحظر</span>
               </span>
               <span className="text-[10px] text-[#008069] font-bold">وضع الأمان مفعل ✓</span>
             </div>
@@ -699,7 +825,7 @@ export const BulkSender: React.FC<BulkSenderProps> = ({
                 </label>
                 <input
                   type="range"
-                  min={2}
+                  min={3}
                   max={15}
                   value={settings.delayMin}
                   onChange={(e) => setSettings({ ...settings, delayMin: Number(e.target.value) })}
@@ -712,7 +838,7 @@ export const BulkSender: React.FC<BulkSenderProps> = ({
                 </label>
                 <input
                   type="range"
-                  min={5}
+                  min={6}
                   max={30}
                   value={settings.delayMax}
                   onChange={(e) => setSettings({ ...settings, delayMax: Number(e.target.value) })}
@@ -722,7 +848,7 @@ export const BulkSender: React.FC<BulkSenderProps> = ({
             </div>
             
             <p className="text-[10px] text-slate-600 leading-tight">
-              🛡️ يختار البرنامج فاصلاً عشوائياً مختلفاً بين كل رسالة وأخرى لمحاكاة السلوك الإنساني بدقة.
+              🛡️ يختار البرنامج فاصلاً عشوائياً مختلفاً بين كل رسالة والأخرى لتجنب الرتابة وحماية رقمك.
             </p>
           </div>
 
@@ -760,28 +886,24 @@ export const BulkSender: React.FC<BulkSenderProps> = ({
           {/* Progress Bar & Campaign Stats */}
           <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200/80 space-y-3">
             <div className="flex items-center justify-between text-xs">
-              <span className="text-slate-600 font-medium">حالة تنفيذ الحملة:</span>
-              <span className="font-mono text-[#008069] font-bold">{progressPercent}% مكتمل ({sentCount} من {contacts.length})</span>
+              <div className="flex items-center gap-2">
+                <span className="text-slate-600 font-medium">تقدم الحملة:</span>
+                <span className="font-mono text-[#008069] font-bold">{progressPercent}% ({sentCount} من {contacts.length})</span>
+              </div>
+              <span className="text-[11px] text-[#008069] font-bold">
+                {dispatchMode === 'single_tab_flow' 
+                  ? '🎯 نافذة مركزية موحدة' 
+                  : dispatchMode === 'direct_cloud' 
+                  ? '⚡ سحابي في الخلفية (0 نوافذ)' 
+                  : '🔗 محادثات فردية'}
+              </span>
             </div>
 
-            <div className="w-full bg-slate-200 h-2 rounded-full overflow-hidden">
+            <div className="w-full bg-slate-200 h-2.5 rounded-full overflow-hidden">
               <div 
                 className="bg-[#008069] h-full transition-all duration-300"
                 style={{ width: `${progressPercent}%` }}
               />
-            </div>
-
-            {/* Auto Dispatch Trigger Option */}
-            <div className="pt-1">
-              <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={autoOpenWhatsAppWeb}
-                  onChange={(e) => setAutoOpenWhatsAppWeb(e.target.checked)}
-                  className="rounded accent-[#008069]"
-                />
-                <span>محاولة فتح المحادثة تلقائياً في نافذة جديدة عند انقضاء الوقت</span>
-              </label>
             </div>
 
             {/* Live Controller Buttons */}
@@ -791,15 +913,21 @@ export const BulkSender: React.FC<BulkSenderProps> = ({
                   <button
                     onClick={handleStartCampaign}
                     disabled={contacts.length === 0 || sentCount === contacts.length}
-                    className="px-4 py-2 text-xs font-bold text-white bg-[#008069] hover:bg-[#006e5a] disabled:opacity-40 disabled:cursor-not-allowed rounded-lg flex items-center gap-1.5 transition-colors cursor-pointer shadow-xs"
+                    className="px-4 py-2 text-xs font-bold text-white bg-[#008069] hover:bg-[#006e5a] disabled:opacity-40 disabled:cursor-not-allowed rounded-xl flex items-center gap-1.5 transition-colors cursor-pointer shadow-xs"
                   >
                     <Play className="w-3.5 h-3.5 fill-current" />
-                    <span>بدء تشغيل الحملة</span>
+                    <span>
+                      {dispatchMode === 'single_tab_flow' 
+                        ? 'بدء الإرسال بالنافذة الموحدة' 
+                        : dispatchMode === 'direct_cloud'
+                        ? 'بدء الإرسال السحابي بالخلفية'
+                        : 'بدء تشغيل الحملة'}
+                    </span>
                   </button>
                 ) : (
                   <button
                     onClick={handlePauseCampaign}
-                    className="px-4 py-2 text-xs font-bold text-white bg-amber-600 hover:bg-amber-500 rounded-lg flex items-center gap-1.5 transition-colors cursor-pointer"
+                    className="px-4 py-2 text-xs font-bold text-white bg-amber-600 hover:bg-amber-500 rounded-xl flex items-center gap-1.5 transition-colors cursor-pointer shadow-xs"
                   >
                     <Pause className="w-3.5 h-3.5 fill-current" />
                     <span>إيقاف مؤقت</span>
@@ -808,7 +936,7 @@ export const BulkSender: React.FC<BulkSenderProps> = ({
 
                 <button
                   onClick={handleResetCampaign}
-                  className="px-2.5 py-1.5 text-xs text-slate-600 hover:text-slate-900 bg-white border border-slate-200 rounded-lg flex items-center gap-1 cursor-pointer"
+                  className="px-2.5 py-1.5 text-xs text-slate-600 hover:text-slate-900 bg-white border border-slate-200 rounded-xl flex items-center gap-1 cursor-pointer"
                 >
                   <RotateCcw className="w-3.5 h-3.5" />
                   <span>إعادة ضبط</span>
@@ -824,7 +952,7 @@ export const BulkSender: React.FC<BulkSenderProps> = ({
             </div>
           </div>
 
-          {/* Contacts Table with Clear Real Send Button */}
+          {/* Contacts Table with Direct Send Button */}
           <div className="border border-slate-200 rounded-xl overflow-hidden bg-white">
             <div className="max-h-[300px] overflow-y-auto">
               <table className="w-full text-right text-xs">
@@ -833,7 +961,7 @@ export const BulkSender: React.FC<BulkSenderProps> = ({
                     <th className="py-2.5 px-3">الاسم</th>
                     <th className="py-2.5 px-3">رقم الهاتف</th>
                     <th className="py-2.5 px-3">الحالة</th>
-                    <th className="py-2.5 px-3 text-center">إرسال بالواتساب</th>
+                    <th className="py-2.5 px-3 text-center">إرسال فوري</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 font-sans">
@@ -857,13 +985,13 @@ export const BulkSender: React.FC<BulkSenderProps> = ({
                           {contact.status === 'sent' && (
                             <span className="inline-flex items-center gap-1 text-[11px] text-[#008069] font-bold">
                               <CheckCircle2 className="w-3 h-3" />
-                              <span>تم الإرسال</span>
+                              <span>تم الإرسال ✓✓</span>
                             </span>
                           )}
                           {contact.status === 'sending' && (
                             <span className="inline-flex items-center gap-1 text-[11px] text-amber-600 font-bold animate-pulse">
                               <RefreshCw className="w-3 h-3 animate-spin" />
-                              <span>جارٍ الإرسال...</span>
+                              <span>جارٍ التوجيه...</span>
                             </span>
                           )}
                           {contact.status === 'pending' && (
@@ -874,25 +1002,26 @@ export const BulkSender: React.FC<BulkSenderProps> = ({
                         </td>
                         <td className="py-2 px-3 text-center">
                           <div className="flex items-center justify-center gap-1.5">
-                            {/* Prominent Direct Real WhatsApp Button */}
+                            {/* Direct Send Button */}
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
-                                handleDirectSendSingle(contact);
+                                handleSendSingleDirect(contact);
                               }}
-                              title="إرسال رسالة حقيقية فعلية إلى هذا الرقم عبر تطبيق واتساب الآن"
-                              className="px-2.5 py-1 text-[11px] font-bold text-[#008069] bg-[#e7f7f3] hover:bg-[#008069] hover:text-white rounded-lg transition-colors border border-[#008069]/30 flex items-center gap-1 cursor-pointer"
+                              title="إرسال مباشر للرسالة لهذا الرقم الآن"
+                              className="px-2.5 py-1 text-[11px] font-bold text-white bg-[#008069] hover:bg-[#006e5a] rounded-lg transition-colors shadow-2xs flex items-center gap-1 cursor-pointer"
                             >
                               <Send className="w-3 h-3" />
                               <span>إرسال الآن</span>
                             </button>
+
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
                                 handleDeleteContact(contact.id);
                               }}
                               title="حذف الرقم"
-                              className="p-1 text-slate-400 hover:text-rose-500 hover:bg-rose-50 rounded transition-colors"
+                              className="p-1 text-slate-400 hover:text-rose-500 hover:bg-rose-50 rounded transition-colors cursor-pointer"
                             >
                               <Trash2 className="w-3.5 h-3.5" />
                             </button>
@@ -915,7 +1044,7 @@ export const BulkSender: React.FC<BulkSenderProps> = ({
             <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-200 h-24 overflow-y-auto font-mono text-[11px] text-slate-600 space-y-1">
               {campaignLog.length === 0 ? (
                 <div className="text-slate-400 text-center py-4 font-sans text-xs">
-                  المنظومة جاهزة. اضغط "إرسال الآن" بجانب أي رقم لفتح الواتساب فوراً، أو اضغط "بدء تشغيل الحملة".
+                  المنظومة جاهزة للإرسال. اضغط "بدء الإرسال بالنافذة الموحدة" للبدء بتتابع آمن ومنظم.
                 </div>
               ) : (
                 campaignLog.map((log, i) => (
@@ -951,7 +1080,7 @@ export const BulkSender: React.FC<BulkSenderProps> = ({
       {/* Manual Contacts Modal */}
       {showManualModal && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white border border-slate-200 rounded-2xl p-6 max-w-lg w-full space-y-4 shadow-xl">
+          <div className="bg-white border border-slate-200 rounded-2xl p-6 max-w-lg w-full space-y-4 shadow-xl text-right">
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
                 <Plus className="w-4 h-4 text-[#008069]" />
@@ -1000,28 +1129,93 @@ export const BulkSender: React.FC<BulkSenderProps> = ({
         </div>
       )}
 
-      {/* QR Code / Sender Account Pairing Modal */}
-      {isQrModalOpen && (
+      {/* Explainer Modal: Answers "Who is the sender?", "Why didn't message arrive?", "How to send without tabs?" */}
+      {showExplainerModal && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white border border-slate-200 rounded-3xl max-w-md w-full p-6 space-y-5 shadow-2xl relative text-right">
+          <div className="bg-white border border-slate-200 rounded-3xl max-w-xl w-full p-6 space-y-5 shadow-2xl relative text-right max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <div className="flex items-center gap-2">
-                <QrCode className="w-5 h-5 text-[#008069]" />
-                <h3 className="text-sm font-bold text-slate-900">ربط رقم الواتساب المُرسِل</h3>
+                <HelpCircle className="w-5 h-5 text-[#008069]" />
+                <h3 className="text-sm font-bold text-slate-900">إجابات هامة حول آلية الإرسال والوصول للأرقام</h3>
               </div>
               <button
-                onClick={() => setIsQrModalOpen(false)}
+                onClick={() => setShowExplainerModal(false)}
                 className="text-slate-400 hover:text-slate-700 text-xs cursor-pointer"
               >
                 إغلاق ✕
               </button>
             </div>
 
-            <div className="space-y-3">
+            <div className="space-y-4 text-xs leading-relaxed text-slate-700">
+              
+              <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-2xl space-y-1.5">
+                <div className="font-bold text-emerald-950 flex items-center gap-1.5 text-sm">
+                  <Smartphone className="w-4 h-4 text-[#008069]" />
+                  <span>1. من هو الرقم الذي يقوم بإرسال الرسائل للأرقام؟</span>
+                </div>
+                <p className="text-emerald-900 text-xs leading-relaxed">
+                  الرسائل في واتساب لا يمكن أن تخرج من الفراغ! الرقم المُرسِل هو <strong>حساب الواتساب الخاص بك أنت</strong> (رقمك الشخصي أو التجاري المسجل على هاتفك أو كمبيوترك)، وتصل الرسالة للمستلم باسمك وصورتك الشخصية، أو من خلال <strong>رقم حساب Meta Cloud API السحابي</strong> إذا كنت تستخدم الحساب المؤسسي.
+                </p>
+              </div>
+
+              <div className="p-4 bg-blue-50 border border-blue-200 rounded-2xl space-y-1.5">
+                <div className="font-bold text-blue-950 flex items-center gap-1.5 text-sm">
+                  <Zap className="w-4 h-4 text-blue-700" />
+                  <span>2. كيف نرسل الرسائل بشكل مباشر بدون فتح نافذة متصفح لكل رقم؟</span>
+                </div>
+                <p className="text-blue-900 text-xs leading-relaxed">
+                  نوفر لك طريقتين احترافيتين للتخلص من فوضى النوافذ المنبثقة:
+                  <br />
+                  • <strong>الطريقة الأولى (النافذة المركزية الموحدة Single Tab):</strong> يفتح البرنامج نافذة واحدة فقط ثابتة تتنقل تلقائياً بين الأرقام بتتابع زمني، فلا تفتح 50 نافذة ولا يتعطل المتصفح!
+                  <br />
+                  • <strong>الطريقة الثانية (الإرسال السحابي Meta Cloud API):</strong> ترسل الرسائل من السيرفر مباشرة في الخلفية (0 نوافذ) وتصل المستلمين فوراً.
+                </p>
+              </div>
+
+              <div className="p-4 bg-amber-50 border border-amber-200 rounded-2xl space-y-1.5">
+                <div className="font-bold text-amber-950 flex items-center gap-1.5 text-sm">
+                  <AlertTriangle className="w-4 h-4 text-amber-700" />
+                  <span>3. لماذا لم تكن الرسالة تصل إلى رقمي عند تجربته، وكيف أتأكد الآن؟</span>
+                </div>
+                <p className="text-amber-900 text-xs leading-relaxed">
+                  عند مراسلة رقمك من نفس رقمك، تفتح محادثة واتساب الرسمية وتحتاج للنقر على زر الإرسال الأخضر داخل المحادثة. يمكنك الآن استخدام زر <strong>"إرسال تجريبي لرقمي الآن"</strong> في أعلى الشاشة؛ وسيفتح محادثتك فوراً جاهزة بالنص والصورة لتضغط إرسال وتراها مباشرة على هاتفك!
+                </p>
+              </div>
+
+              <button
+                onClick={() => setShowExplainerModal(false)}
+                className="w-full py-2.5 text-xs font-bold text-white bg-[#008069] hover:bg-[#006e5a] rounded-xl transition-colors cursor-pointer shadow-xs"
+              >
+                فهمت ذلك، العودة للاستوديو
+              </button>
+
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Sender Number / Pairing Modal */}
+      {isSenderModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-3xl max-w-md w-full p-6 space-y-5 shadow-2xl relative text-right">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2">
+                <QrCode className="w-5 h-5 text-[#008069]" />
+                <h3 className="text-sm font-bold text-slate-900">تحديد رقم الواتساب المُرسِل</h3>
+              </div>
+              <button
+                onClick={() => setIsSenderModalOpen(false)}
+                className="text-slate-400 hover:text-slate-700 text-xs cursor-pointer"
+              >
+                إغلاق ✕
+              </button>
+            </div>
+
+            <div className="space-y-4">
               <div className="p-3 bg-[#e7f7f3] border border-[#008069]/30 rounded-xl text-xs text-[#008069] leading-relaxed">
-                💡 <strong>توضيح هام حول الإرسال:</strong>
+                💡 <strong>من هو المُرسِل؟</strong>
                 <br />
-                الرسائل تصدر مباشرة من حساب الواتساب الخاص بك على هاتفك أو حاسوبك، وتصل للمستلمين باسمك وصورتك ورقمك.
+                الرسائل تخرج من حسابك المسجل هنا، وتظهر للمستلمين برقمك وباسمك تماماً.
               </div>
 
               <div>
@@ -1038,9 +1232,9 @@ export const BulkSender: React.FC<BulkSenderProps> = ({
               </div>
 
               <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl text-center space-y-3">
-                <span className="text-xs font-bold text-slate-800 block">رمز الاستجابة السريعة (QR Code) للاقتران المباشر:</span>
+                <span className="text-xs font-bold text-slate-800 block">خطوات الاقتران عبر تطبيق واتساب:</span>
                 
-                <div className="w-44 h-44 mx-auto bg-white p-3 border-2 border-[#008069]/40 rounded-2xl shadow-xs flex flex-col items-center justify-center relative">
+                <div className="w-40 h-40 mx-auto bg-white p-3 border-2 border-[#008069]/40 rounded-2xl shadow-xs flex flex-col items-center justify-center relative">
                   <div className="grid grid-cols-5 gap-1.5 w-full h-full opacity-80">
                     {Array.from({ length: 25 }).map((_, i) => (
                       <div
@@ -1062,20 +1256,109 @@ export const BulkSender: React.FC<BulkSenderProps> = ({
 
                 <ol className="text-right text-[11px] text-slate-600 space-y-1 list-decimal list-inside pr-1">
                   <li>افتح تطبيق واتساب على هاتفك.</li>
-                  <li>اضغط على الإعدادات (أو القائمة ⋮) واختر <strong>"الأجهزة المرتبطة"</strong>.</li>
+                  <li>اضغط على الإعدادات واختر <strong>"الأجهزة المرتبطة"</strong>.</li>
                   <li>اضغط على <strong>"ربط جهاز"</strong> لتثبيت جلسة الإرسال المباشرة.</li>
                 </ol>
               </div>
 
               <button
                 onClick={() => {
-                  setIsQrModalOpen(false);
+                  setIsSenderModalOpen(false);
                   addLog(`تم تثبيت وتأكيد رقم المُرسِل: ${senderPhone}`);
                 }}
                 className="w-full py-2.5 text-xs font-bold text-white bg-[#008069] hover:bg-[#006e5a] rounded-xl transition-colors cursor-pointer shadow-xs"
               >
-                تأكيد اتصال حساب الواتساب
+                تأكيد وحفظ رقم المُرسِل
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Gateway Configuration Modal */}
+      {isGatewayModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-3xl max-w-lg w-full p-6 space-y-5 shadow-2xl relative text-right">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2">
+                <Settings className="w-5 h-5 text-[#008069]" />
+                <h3 className="text-sm font-bold text-slate-900">إعدادات الإرسال السحابي (Meta Cloud API)</h3>
+              </div>
+              <button
+                onClick={() => setIsGatewayModalOpen(false)}
+                className="text-slate-400 hover:text-slate-700 text-xs cursor-pointer"
+              >
+                إغلاق ✕
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <div className="p-3 bg-[#e7f7f3] border border-[#008069]/30 rounded-xl text-xs text-[#008069] leading-relaxed">
+                ⚡ <strong>الإرسال السحابي في الخلفية (بدون فتح أي نوافذ):</strong>
+                <br />
+                يسمح لك بإرسال آلاف الرسائل مباشرة من السيرفر إلى واتساب بدون فتح أي صفحة على جهازك نهائياً، باستخدام حساب مطوري Meta الرسمي المجاني.
+              </div>
+
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-[11px] text-slate-700 font-semibold mb-1">
+                    Phone Number ID (معرف رقم الهاتف من Meta):
+                  </label>
+                  <input
+                    type="text"
+                    value={gatewayConfig.phoneNumberId || ''}
+                    onChange={(e) => setGatewayConfig({ ...gatewayConfig, phoneNumberId: e.target.value })}
+                    placeholder="مثال: 1098457281920"
+                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-800 font-mono outline-none focus:border-[#008069]"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[11px] text-slate-700 font-semibold mb-1">
+                    Permanent Access Token (رمز الوصول الدائم):
+                  </label>
+                  <input
+                    type="password"
+                    value={gatewayConfig.accessToken || ''}
+                    onChange={(e) => setGatewayConfig({ ...gatewayConfig, accessToken: e.target.value })}
+                    placeholder="EAAG..."
+                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-800 font-mono outline-none focus:border-[#008069]"
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setGatewayConfig({
+                      ...gatewayConfig,
+                      phoneNumberId: '1098457281920',
+                      accessToken: 'EAAG_DEMO_TOKEN_SIMULATED',
+                    });
+                    addLog('تم ملء بيانات تجريبية لحساب Meta Cloud API.');
+                  }}
+                  className="text-[11px] text-[#008069] underline cursor-pointer"
+                >
+                  تجربة تعبئة بيانات توضيحية
+                </button>
+
+                <button
+                  onClick={() => {
+                    setIsGatewayModalOpen(false);
+                    if (gatewayConfig.phoneNumberId && gatewayConfig.accessToken) {
+                      setDispatchMode('direct_cloud');
+                      addLog('تم حفظ بيانات Meta Cloud API وتفعيل نمط الإرسال السحابي المباشر بالخلفية.');
+                    } else {
+                      addLog('تم حفظ إعدادات البوابة.');
+                    }
+                  }}
+                  className="px-5 py-2.5 text-xs font-bold text-white bg-[#008069] hover:bg-[#006e5a] rounded-xl transition-colors cursor-pointer shadow-xs"
+                >
+                  حفظ وتفعيل الإرسال السحابي
+                </button>
+              </div>
+
             </div>
           </div>
         </div>

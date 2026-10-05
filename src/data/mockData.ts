@@ -1,4 +1,4 @@
-import { Contact, AutoResponderRule, TutorialVideo, ClientLicense } from '../types';
+import { Contact, AutoResponderRule, TutorialVideo } from '../types';
 
 export const initialContacts: Contact[] = [
   { id: '1', name: 'أحمد محمود', phone: '+966501234567', customVar: 'كوبون VIP20', status: 'pending' },
@@ -126,28 +126,16 @@ export const tutorialVideos: TutorialVideo[] = [
   },
   {
     id: 'v5',
-    title: 'تفعيل البرنامج باسمك وبياناتك ونقله بين الأجهزة والويندوز',
-    duration: '03:10',
-    category: 'التفعيل والترخيص',
-    description: 'طريقة تسجيل الرخصة بالاسم ورقم الهاتف الخاص بك، وكيفية نقل التفعيل بسهولة إذا قمت بتغيير جهاز الكمبيوتر أو إعادة تثبيت الويندوز.',
+    title: 'الإرسال المباشر بدون فتح نوافذ متصفح وتحديد الرقم المُرسِل',
+    duration: '04:10',
+    category: 'الإرسال السحابي والمباشر',
+    description: 'شرح شامل لكيفية إرسال الرسائل مباشرة إلى أرقام المستلمين عبر السيرفر بدون أن يفتح المتصفح أي نوافذ لكل رقم، ومن أين تخرج الرسائل بالضبط.',
     steps: [
-      'استخراج كود معرف الجهاز (Machine ID).',
-      'إدخال مفتاح الترخيص المخصص المربوط باسمك.',
-      'حفظ كود الترخيص في مكان آمن للرجوع إليه عند الحاجة.',
-      'التواصل مع الدعم الفني المباشر لطلب إعادة التفعيل المجاني.',
+      'فهم مصدر الرقم المُرسِل (رقم هاتفك المربوط أو حساب واتساب السحابي Meta Cloud API).',
+      'تفعيل نمط الإرسال السحابي المباشر لإرسال الدفعات في الخلفية بصمت تام.',
+      'استخدام تقنية النافذة المركزية الموحدة لتجنب حظر النوافذ المنبثقة.',
+      'فحص وصول الرسائل في الوقت الفعلي والتأكد من استلام المستلم لها.',
     ],
-    thumbnail: 'safety_antiban_shield',
+    thumbnail: 'video_tutorial_thumbnail',
   },
 ];
-
-export const defaultLicense: ClientLicense = {
-  isActivated: true,
-  clientName: 'م. أحمد ميري',
-  clientPhone: '+966548901234',
-  hardwareId: 'HWID-984F-B21C-77EA-WA2026',
-  licenseKey: 'WP-ULTRA-2026-VIP-9941-LIFETIME',
-  planName: 'النسخة الاحترافية الشاملة مدى الحياة (LifeTime Pro)',
-  activationDate: '2026-03-15',
-  allowedDevices: 2,
-  freeUpdatesUntil: 'مدى الحياة (تحديثات مجانية مستمرة)',
-};
