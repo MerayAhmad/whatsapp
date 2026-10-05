@@ -6,7 +6,7 @@ import {
   ChevronRight, RefreshCw, Send, Users, BookOpen, 
   Smartphone, QrCode, Zap, Settings, Globe, Check, 
   Layers, ArrowUpRight, HelpCircle, AlertTriangle, 
-  Info, ShieldCheck, AppWindow
+  Info, ShieldCheck, AppWindow, Copy
 } from 'lucide-react';
 import { Contact, CampaignSettings, MessagePayload, MediaType, DispatchMode, GatewayConfig } from '../types';
 import { initialContacts, sampleTemplates } from '../data/mockData';
@@ -104,12 +104,21 @@ export const BulkSender: React.FC<BulkSenderProps> = ({
   const [showManualModal, setShowManualModal] = useState(false);
   const [showExplainerModal, setShowExplainerModal] = useState(false);
   const [showPopupsHelpModal, setShowPopupsHelpModal] = useState(false);
+  const [showQrForCurrent, setShowQrForCurrent] = useState(true);
+  const [copyFeedback, setCopyFeedback] = useState<string | null>(null);
 
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const dedicatedWindowRef = useRef<Window | null>(null);
 
   // Selected contact for live mockup preview
   const currentPreviewContact = contacts.find((c) => c.id === selectedContactId) || contacts[0];
+
+  const handleCopyText = (text: string, label: string) => {
+    navigator.clipboard.writeText(text);
+    setCopyFeedback(label);
+    addLog(`📋 تم نسخ: ${label} بنجاح إلى الحافظة.`);
+    setTimeout(() => setCopyFeedback(null), 3500);
+  };
 
   // Advance sequential interactive campaign (Bypasses popup blocker 100%)
   const handleAdvanceSequential = (contact: Contact, medium: 'app' | 'web') => {
@@ -1062,8 +1071,70 @@ export const BulkSender: React.FC<BulkSenderProps> = ({
                 </a>
               </div>
 
+              {/* Mobile QR Code & Clipboard Tools (Zero Popups, 100% Guaranteed!) */}
+              <div className="pt-2 border-t border-emerald-200/70 bg-white/80 p-3 rounded-xl flex flex-col md:flex-row items-center gap-4">
+                {/* QR Code for Mobile Camera */}
+                <div className="flex flex-col items-center gap-1 shrink-0">
+                  <div className="w-24 h-24 bg-white p-1 rounded-xl border border-slate-200 shadow-2xs">
+                    <img
+                      src={`https://api.qrserver.com/v1/create-qr-code/?size=140x140&data=${encodeURIComponent(getDirectWhatsAppUrl(contacts[currentIndex]))}`}
+                      alt="رمز QR للإرسال بالهاتف"
+                      className="w-full h-full object-contain rounded"
+                    />
+                  </div>
+                  <span className="text-[10px] text-emerald-800 font-bold text-center">
+                    امسح بكاميرا هاتفك 📱
+                  </span>
+                </div>
+
+                {/* Info & Copy Buttons */}
+                <div className="space-y-2 flex-1 w-full text-right">
+                  <div className="text-xs font-bold text-slate-900">
+                    الحل المباشر للتغلب على حظر النوافذ في المتصفح:
+                  </div>
+                  <p className="text-[11px] text-slate-600 leading-relaxed">
+                    1. <strong>المسح بالهاتف:</strong> وجّه كاميرا جوالك إلى الباركود، وسيفتح واتساب بهاتفك محادثة <strong>({contacts[currentIndex].name})</strong> فوراً والرسالة جاهزة!
+                    <br />
+                    2. <strong>أو انسخ الرابط:</strong> انسخ رابط المحادثة وافتحه في تبويب جديد بمتصفحك:
+                  </p>
+
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <button
+                      onClick={() => handleCopyText(getDirectWhatsAppUrl(contacts[currentIndex]), `رابط محادثة ${contacts[currentIndex].name}`)}
+                      className="px-3 py-1.5 text-xs font-bold text-emerald-800 bg-emerald-100 hover:bg-emerald-200 rounded-lg flex items-center gap-1 cursor-pointer transition-colors"
+                    >
+                      <Copy className="w-3.5 h-3.5" />
+                      <span>نسخ رابط الواتساب الجاهز للرقم</span>
+                    </button>
+
+                    <button
+                      onClick={() => handleCopyText(formatContactMessage(contacts[currentIndex]), 'نص الرسالة التسويقية')}
+                      className="px-3 py-1.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg flex items-center gap-1 cursor-pointer transition-colors"
+                    >
+                      <Copy className="w-3.5 h-3.5" />
+                      <span>نسخ نص الرسالة فقط</span>
+                    </button>
+
+                    <button
+                      onClick={() => handleCopyText('https://ais-dev-n5yd7obd7eppslprji7dlh-502190781622.europe-west2.run.app', 'رابط البرنامج خارج المعاينة')}
+                      className="px-3 py-1.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg flex items-center gap-1 cursor-pointer transition-colors"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                      <span>نسخ رابط البرنامج لفتحه بتبويب مستقل</span>
+                    </button>
+                  </div>
+
+                  {copyFeedback && (
+                    <div className="text-[11px] text-emerald-700 font-bold flex items-center gap-1 animate-fade-in pt-0.5">
+                      <Check className="w-3.5 h-3.5" />
+                      <span>تم النسخ بنجاح! الصقه في المتصفح أو الواتساب.</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+
               <div className="text-[11px] text-emerald-800 flex items-center justify-between">
-                <span>⚡ اضغط الزر ليفتح واتساب فوراً وتصل الرسالة لـ ({contacts[currentIndex].name})، وسينتقل تلقائياً للرقم التالي!</span>
+                <span>⚡ بعد إرسال الرسالة لـ ({contacts[currentIndex].name})، اضغط زر "التالي" بالأعلى للانتقال للرقم التالي!</span>
                 {isRunning && (
                   <button
                     onClick={handlePauseCampaign}
